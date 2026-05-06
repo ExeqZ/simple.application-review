@@ -93,17 +93,22 @@ function Get-GraphAccessToken {
         }
 
         'CertFile' {
+            # EphemeralKeySet is Windows-only; fall back to DefaultKeySet on macOS/Linux
+            $keyFlag = if ($IsWindows) {
+                [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+            } else {
+                [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet
+            }
             if ($CertificatePassword) {
                 $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
-                    $CertificatePath, $CertificatePassword,
-                    [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+                    $CertificatePath, $CertificatePassword, $keyFlag
                 )
             }
             else {
                 $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
                     $CertificatePath,
                     [string]$null,
-                    [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+                    $keyFlag
                 )
             }
             try {

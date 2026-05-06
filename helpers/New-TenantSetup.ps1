@@ -54,7 +54,7 @@
     certificateThumbprint instead of certificatePath.
 
 .PARAMETER CertificateValidityYears
-    Validity period of the generated certificate in years. Defaults to 2.
+    Validity period of the generated certificate in years. Defaults to 1.
 
 .EXAMPLE
     # Connect first, then run setup for a customer (PFX export)
@@ -95,7 +95,7 @@ param(
 
     [switch]$CertificateStoreInstead,
 
-    [int]   $CertificateValidityYears = 2
+    [int]   $CertificateValidityYears = 1
 )
 
 Set-StrictMode -Version Latest
@@ -118,17 +118,48 @@ if (Test-Path $configFile) {
     throw "Config file already exists: $configFile`nDelete it or choose a different CustomerShortName."
 }
 
-$appName    = "AppReview-$CustomerShortName"
+$appName     = "AppReview-$CustomerShortName"
 $certSubject = "CN=AppReview-$CustomerShortName"
 $certFile    = Join-Path $secretsFolder "$CustomerShortName.cer"
 $pfxFile     = Join-Path $secretsFolder "$CustomerShortName.pfx"
 $pfxPassFile = Join-Path $secretsFolder "$CustomerShortName.pfx.pass"
+
+# ── Rollback state — track what was created so we can clean up on error ────────
+$rollback = @{
+    AppObjectId  = $null   # Graph application object ID
+    SpObjectId   = $null   # service principal object ID
+    FilesWritten = [System.Collections.Generic.List[string]]::new()
+}
+
+function Invoke-Rollback {
+    param([hashtable]$State)
+    Write-Host ""
+    Write-Host "  Rolling back partially created resources..." -ForegroundColor Yellow
+    if ($State.AppObjectId) {
+        try {
+            Invoke-MgGraphRequest -Method DELETE `
+                -Uri "https://graph.microsoft.com/v1.0/applications/$($State.AppObjectId)" | Out-Null
+            Write-Host "  Deleted app registration ($($State.AppObjectId))." -ForegroundColor Gray
+        } catch {
+            Write-Warning "  Could not delete app registration $($State.AppObjectId): $_"
+            Write-Warning "  Delete it manually: https://entra.microsoft.com -> App registrations -> Deleted applications"
+        }
+    }
+    foreach ($f in $State.FilesWritten) {
+        if (Test-Path $f) {
+            Remove-Item $f -Force
+            Write-Host "  Deleted file: $f" -ForegroundColor Gray
+        }
+    }
+}
 
 Write-Host "`n=== Application Review — Tenant Onboarding ===" -ForegroundColor Cyan
 Write-Host "  Tenant       : $TenantId"
 Write-Host "  App name     : $appName"
 Write-Host "  Config file  : $configFile"
 Write-Host ""
+
+try {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 1 — Verify active Microsoft Graph session
@@ -214,7 +245,18 @@ $existingApps = Invoke-MgGraphRequest -Method GET `
     -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=displayName eq '$appName'&`$select=id,appId" `
     -OutputType PSObject
 if ($existingApps.value.Count -gt 0) {
-    throw "An app registration named '$appName' already exists (appId: $($existingApps.value[0].appId)).`nDelete it or choose a different CustomerShortName."
+    $existingAppId  = $existingApps.value[0].appId
+    $existingObjId  = $existingApps.value[0].id
+    Write-Host ""
+    Write-Host "  WARNING: App registration '$appName' already exists (appId: $existingAppId)." -ForegroundColor Yellow
+    Write-Host "  This is likely from a previous partial run." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Options:" -ForegroundColor Yellow
+    Write-Host "    1. Delete the existing app and re-run this script:"
+    Write-Host "         Invoke-MgGraphRequest -Method DELETE -Uri 'https://graph.microsoft.com/v1.0/applications/$existingObjId'"
+    Write-Host "    2. Choose a different -CustomerShortName."
+    Write-Host ""
+    throw "Aborted. Resolve the existing app registration before re-running."
 }
 
 $app = Invoke-MgGraphRequest -Method POST -Uri 'https://graph.microsoft.com/v1.0/applications' `
@@ -229,12 +271,14 @@ $app = Invoke-MgGraphRequest -Method POST -Uri 'https://graph.microsoft.com/v1.0
         )
         notes = "Created by New-TenantSetup.ps1 for the Application Review solution on $(Get-Date -Format 'yyyy-MM-dd')."
     } -OutputType PSObject
+$rollback.AppObjectId = $app.id
 Write-Host "  Created app: $($app.displayName) (appId: $($app.appId), objectId: $($app.id))" -ForegroundColor Green
 
 # Create service principal
 Start-Sleep -Seconds 3   # allow replication
 $sp = Invoke-MgGraphRequest -Method POST -Uri 'https://graph.microsoft.com/v1.0/servicePrincipals' `
     -Body @{ appId = $app.appId } -OutputType PSObject
+$rollback.SpObjectId = $sp.id
 Write-Host "  Created service principal (objectId: $($sp.id))" -ForegroundColor Green
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -273,12 +317,16 @@ if ($CertificateStoreInstead) {
     Write-Host "  Certificate installed to Cert:\CurrentUser\My — thumbprint: $thumbprint" -ForegroundColor Green
 }
 else {
-    # Export PFX with random password
-    Add-Type -AssemblyName System.Web
-    $pfxPassword   = [System.Web.Security.Membership]::GeneratePassword(32, 8)
-    $pfxBytes      = $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $pfxPassword)
+    # Generate a cryptographically random password (pure .NET — no System.Web dependency)
+    $pwdBytes    = [byte[]]::new(24)
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($pwdBytes)
+    $pfxPassword = [Convert]::ToBase64String($pwdBytes)
+
+    $pfxBytes    = $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $pfxPassword)
     [System.IO.File]::WriteAllBytes($pfxFile, $pfxBytes)
+    $rollback.FilesWritten.Add($pfxFile)
     $pfxPassword | Set-Content -Path $pfxPassFile -Encoding UTF8 -NoNewline
+    $rollback.FilesWritten.Add($pfxPassFile)
     Write-Host "  PFX exported: $pfxFile" -ForegroundColor Green
     Write-Host "  Password file: $pfxPassFile  (restrict file permissions!)" -ForegroundColor Green
     $thumbprint    = $cert.Thumbprint
@@ -287,6 +335,7 @@ else {
 # Export public .cer (DER encoded) for upload to the app
 $cerBytes = $cert.RawData
 [System.IO.File]::WriteAllBytes($certFile, $cerBytes)
+$rollback.FilesWritten.Add($certFile)
 Write-Host "  Public .cer exported: $certFile" -ForegroundColor Green
 
 # Upload certificate to app registration
@@ -301,8 +350,8 @@ Invoke-MgGraphRequest -Method PATCH `
                 usage         = 'Verify'
                 key           = $certBase64
                 displayName   = $certSubject
-                startDateTime = $notBefore.ToString('o')
-                endDateTime   = $notAfter.ToString('o')
+                startDateTime = $notBefore.UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
+                endDateTime   = $notAfter.UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
             }
         )
     } | Out-Null
@@ -361,6 +410,7 @@ $tenantConfig = [ordered]@{
 foreach ($key in $authConfig.Keys) { $tenantConfig[$key] = $authConfig[$key] }
 
 $tenantConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $configFile -Encoding UTF8
+$rollback.FilesWritten.Add($configFile)
 
 Write-Host "  Config written." -ForegroundColor Green
 
@@ -386,3 +436,13 @@ Write-Host ""
 Write-Host "  Run the review:"
 Write-Host "     .\Invoke-MultiTenantReview.ps1" -ForegroundColor Green
 Write-Host ""
+
+} catch {
+    # ── Error handler: roll back everything created in this run ───────────────
+    Write-Host ""
+    Write-Host "ERROR: $_" -ForegroundColor Red
+    Invoke-Rollback -State $rollback
+    Write-Host ""
+    Write-Host "  Setup did not complete. Fix the error above and re-run the script." -ForegroundColor Yellow
+    exit 1
+}

@@ -123,6 +123,61 @@ Write-Host "  Lookback       : $globalLookback days (default)"
 Write-Host "  Inactivity     : $globalInactive days (default)"
 Write-Host "  Output         : $OutputFolder`n"
 
+# ── Helper: multi-tenant HTML summary ────────────────────────────────────────
+# Defined here (before use) so PowerShell can resolve it during execution.
+function Build-MultiTenantSummaryHtml {
+    param([object[]]$Summaries)
+
+    $generated = Get-Date -Format 'yyyy-MM-dd HH:mm UTC'
+    $rows = ($Summaries | ForEach-Object {
+        $statusColor = if ($_.Status -eq 'Success') { '#166534' } else { '#991b1b' }
+        $critCls = if ($_.CriticalRisk -gt 0) { 'color:#b91c1c;font-weight:700' } else { '' }
+        $highCls = if ($_.HighRisk    -gt 0) { 'color:#c2410c;font-weight:600' } else { '' }
+        $tenantNameHtml = [System.Net.WebUtility]::HtmlEncode($_.TenantName)
+        @"
+<tr>
+  <td><strong>$tenantNameHtml</strong><br><span style='font-size:0.68rem;color:#9ca3af'>$($_.TenantId)</span></td>
+  <td style='text-align:center'>$($_.TotalApps)</td>
+  <td style='text-align:center;$critCls'>$($_.CriticalRisk)</td>
+  <td style='text-align:center;$highCls'>$($_.HighRisk)</td>
+  <td style='text-align:center'>$($_.MediumRisk)</td>
+  <td style='text-align:center;$(if($_.DefenderHighRisk -gt 0){"color:#991b1b;font-weight:700"})'>$($_.DefenderHighRisk)</td>
+  <td style='text-align:center;$(if($_.DefenderMediumRisk -gt 0){"color:#92400e"})'>$($_.DefenderMediumRisk)</td>
+  <td style='text-align:center;$(if($_.InactiveApps -gt 0){"color:#6b7280"})'>$($_.InactiveApps)</td>
+  <td>$($_.ProcessedAt)</td>
+  <td style='color:$statusColor;font-weight:600'>$($_.Status)</td>
+</tr>
+"@
+    }) -join "`n"
+
+    return @"
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<title>Multi-Tenant Application Review Summary</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;background:#f3f4f6;color:#111827;margin:0;padding:0}
+header{background:#1e3a5f;color:#fff;padding:18px 28px}
+header h1{font-size:1.3rem;font-weight:600}
+header p{font-size:.78rem;opacity:.7;margin-top:3px}
+.wrap{padding:24px 28px}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+th{background:#1e3a5f;color:#fff;padding:9px 12px;text-align:left;font-size:.7rem;text-transform:uppercase;letter-spacing:.04em}
+td{padding:8px 12px;border-bottom:1px solid #e5e7eb;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#f8fafc}
+</style></head><body>
+<header><h1>Multi-Tenant Application Review — Summary</h1><p>Generated: $generated</p></header>
+<div class="wrap">
+<table>
+<thead><tr>
+  <th>Tenant</th><th>Apps</th><th>Critical</th><th>High</th><th>Medium</th>
+  <th>Def: High</th><th>Def: Medium</th><th>Inactive</th><th>Run At</th><th>Status</th>
+</tr></thead>
+<tbody>$rows</tbody>
+</table>
+</div></body></html>
+"@
+}
+
 # ── Import modules ────────────────────────────────────────────────────────────
 $moduleRoot = Join-Path $PSScriptRoot 'modules'
 Import-Module (Join-Path $moduleRoot 'GraphAuth.psm1')    -Force
@@ -339,56 +394,4 @@ if ($allTenantSummaries.Count -gt 0) {
 if ($errors.Count -gt 0) {
     Write-Warning "`n$($errors.Count) tenant(s) failed:"
     $errors | ForEach-Object { Write-Warning "  $($_.TenantName): $($_.Error)" }
-}
-
-function Build-MultiTenantSummaryHtml {
-    param([object[]]$Summaries)
-
-    $generated = Get-Date -Format 'yyyy-MM-dd HH:mm UTC'
-    $rows = ($Summaries | ForEach-Object {
-        $statusColor = if ($_.Status -eq 'Success') { '#166534' } else { '#991b1b' }
-        $critCls = if ($_.CriticalRisk -gt 0) { 'color:#b91c1c;font-weight:700' } else { '' }
-        $highCls = if ($_.HighRisk    -gt 0) { 'color:#c2410c;font-weight:600' } else { '' }
-        @"
-<tr>
-  <td><strong>$([System.Web.HttpUtility]::HtmlEncode($_.TenantName))</strong><br><span style='font-size:0.68rem;color:#9ca3af'>$($_.TenantId)</span></td>
-  <td style='text-align:center'>$($_.TotalApps)</td>
-  <td style='text-align:center;$critCls'>$($_.CriticalRisk)</td>
-  <td style='text-align:center;$highCls'>$($_.HighRisk)</td>
-  <td style='text-align:center'>$($_.MediumRisk)</td>
-  <td style='text-align:center;$(if($_.DefenderHighRisk -gt 0){"color:#991b1b;font-weight:700"})'>$($_.DefenderHighRisk)</td>
-  <td style='text-align:center;$(if($_.DefenderMediumRisk -gt 0){"color:#92400e"})'>$($_.DefenderMediumRisk)</td>
-  <td style='text-align:center;$(if($_.InactiveApps -gt 0){"color:#6b7280"})'>$($_.InactiveApps)</td>
-  <td>$($_.ProcessedAt)</td>
-  <td style='color:$statusColor;font-weight:600'>$($_.Status)</td>
-</tr>
-"@
-    }) -join "`n"
-
-    return @"
-<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
-<title>Multi-Tenant Application Review Summary</title>
-<style>
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;background:#f3f4f6;color:#111827;margin:0;padding:0}
-header{background:#1e3a5f;color:#fff;padding:18px 28px}
-header h1{font-size:1.3rem;font-weight:600}
-header p{font-size:.78rem;opacity:.7;margin-top:3px}
-.wrap{padding:24px 28px}
-table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08)}
-th{background:#1e3a5f;color:#fff;padding:9px 12px;text-align:left;font-size:.7rem;text-transform:uppercase;letter-spacing:.04em}
-td{padding:8px 12px;border-bottom:1px solid #e5e7eb;vertical-align:middle}
-tr:last-child td{border-bottom:none}
-tr:hover td{background:#f8fafc}
-</style></head><body>
-<header><h1>Multi-Tenant Application Review — Summary</h1><p>Generated: $generated</p></header>
-<div class="wrap">
-<table>
-<thead><tr>
-  <th>Tenant</th><th>Apps</th><th>Critical</th><th>High</th><th>Medium</th>
-  <th>Def: High</th><th>Def: Medium</th><th>Inactive</th><th>Run At</th><th>Status</th>
-</tr></thead>
-<tbody>$rows</tbody>
-</table>
-</div></body></html>
-"@
 }
