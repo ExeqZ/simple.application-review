@@ -7,8 +7,15 @@
     Run this script once per customer tenant to set up the app registration used by the
     Application Review solution.
 
+    Before running this script, connect to the target tenant using the Microsoft Graph
+    PowerShell module:
+
+        Install-Module Microsoft.Graph -Scope CurrentUser   # first time only
+        Connect-MgGraph -TenantId '<tenantId>' `
+            -Scopes 'Application.ReadWrite.All','Directory.ReadWrite.All'
+
     What this script does:
-      1. Authenticates to the target tenant interactively (browser-based).
+      1. Verifies an active Microsoft Graph session (Connect-MgGraph must be run first).
       2. Creates an Entra ID app registration with the required application permissions:
            - Application.Read.All
            - Directory.Read.All
@@ -50,14 +57,18 @@
     Validity period of the generated certificate in years. Defaults to 2.
 
 .EXAMPLE
-    # Interactive setup for a customer, PFX export
+    # Connect first, then run setup for a customer (PFX export)
+    Connect-MgGraph -TenantId 'contoso.onmicrosoft.com' `
+        -Scopes 'Application.ReadWrite.All','Directory.ReadWrite.All'
     .\helpers\New-TenantSetup.ps1 `
-        -TenantId          'contoso.onmicrosoft.com' `
-        -CustomerShortName 'contoso' `
+        -TenantId            'contoso.onmicrosoft.com' `
+        -CustomerShortName   'contoso' `
         -CustomerDisplayName 'Contoso Ltd'
 
 .EXAMPLE
     # Install cert to local store instead of exporting PFX
+    Connect-MgGraph -TenantId 'fabrikam.onmicrosoft.com' `
+        -Scopes 'Application.ReadWrite.All','Directory.ReadWrite.All'
     .\helpers\New-TenantSetup.ps1 `
         -TenantId            'fabrikam.onmicrosoft.com' `
         -CustomerShortName   'fabrikam' `
@@ -66,8 +77,8 @@
 
 .NOTES
     Requires PowerShell 7.2+ on Windows or macOS/Linux (certificate store option requires Windows).
-    The script uses only built-in .NET cryptography — no external modules required.
-    The interactive login uses device-code flow so it works without a browser on the current machine.
+    Requires the Microsoft.Graph PowerShell module (Install-Module Microsoft.Graph).
+    Certificate generation uses only built-in .NET cryptography — no other external modules needed.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -120,65 +131,59 @@ Write-Host "  Config file  : $configFile"
 Write-Host ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 1 — Authenticate via device-code flow (user must have Global Admin or
-#           Application Administrator + Cloud Application Administrator in the target tenant)
+# STEP 1 — Verify active Microsoft Graph session
 # ─────────────────────────────────────────────────────────────────────────────
-Write-Host "[1/5] Authenticating to tenant $TenantId via device-code flow..." -ForegroundColor Yellow
+Write-Host "[1/5] Checking Microsoft Graph session..." -ForegroundColor Yellow
 
-$tokenEndpoint = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
-$deviceCodeEndpoint = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/devicecode"
-
-# Scopes needed to call Graph for app registration management
-$mgmtScope = 'https://graph.microsoft.com/Application.ReadWrite.All https://graph.microsoft.com/Directory.ReadWrite.All offline_access'
-
-$dcBody = @{
-    client_id = '1950a258-227b-4e31-a9cf-717495945fc2'   # Azure PowerShell well-known public client
-    scope     = $mgmtScope
+if (-not (Get-Command Get-MgContext -ErrorAction SilentlyContinue)) {
+    Write-Host ""
+    Write-Host "  ERROR: Microsoft.Graph PowerShell module is not installed." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Install it first:" -ForegroundColor Yellow
+    Write-Host "    Install-Module Microsoft.Graph -Scope CurrentUser"
+    Write-Host ""
+    exit 1
 }
-$dcResponse = Invoke-RestMethod -Method Post -Uri $deviceCodeEndpoint `
-    -ContentType 'application/x-www-form-urlencoded' -Body $dcBody
 
-Write-Host ""
-Write-Host "  $($dcResponse.message)" -ForegroundColor Cyan
-Write-Host ""
-
-# Poll for the token
-$pollBody = @{
-    grant_type  = 'urn:ietf:params:oauth:grant-type:device_code'
-    client_id   = '1950a258-227b-4e31-a9cf-717495945fc2'
-    device_code = $dcResponse.device_code
+$mgContext = Get-MgContext
+if (-not $mgContext) {
+    Write-Host ""
+    Write-Host "  ERROR: Not connected to Microsoft Graph." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Connect first, then re-run this script:" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "    Connect-MgGraph -TenantId '$TenantId' ``"
+    Write-Host "        -Scopes 'Application.ReadWrite.All','Directory.ReadWrite.All'"
+    Write-Host ""
+    exit 1
 }
-$mgmtToken = $null
-$deadline  = (Get-Date).AddSeconds($dcResponse.expires_in)
-while ((Get-Date) -lt $deadline) {
-    Start-Sleep -Seconds $dcResponse.interval
-    try {
-        $mgmtToken = Invoke-RestMethod -Method Post -Uri $tokenEndpoint `
-            -ContentType 'application/x-www-form-urlencoded' -Body $pollBody
-        break
-    }
-    catch {
-        $errBody = $_.ErrorDetails.Message | ConvertFrom-Json -ErrorAction SilentlyContinue
-        if ($errBody.error -eq 'authorization_pending') { continue }
-        if ($errBody.error -eq 'slow_down') { Start-Sleep -Seconds 5; continue }
-        throw
-    }
+
+# Verify the required scopes are present in the current session
+$requiredScopes  = @('Application.ReadWrite.All', 'Directory.ReadWrite.All')
+$missingScopes   = $requiredScopes | Where-Object { $_ -notin $mgContext.Scopes }
+if ($missingScopes) {
+    Write-Host ""
+    Write-Host "  ERROR: The current session is missing required scopes: $($missingScopes -join ', ')" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Reconnect with all required scopes:" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "    Connect-MgGraph -TenantId '$TenantId' ``"
+    Write-Host "        -Scopes 'Application.ReadWrite.All','Directory.ReadWrite.All'"
+    Write-Host ""
+    exit 1
 }
-if (-not $mgmtToken) { throw 'Authentication timed out. Re-run the script and complete the device-code sign-in.' }
 
-$accessToken = $mgmtToken.access_token
-$graphHeaders = @{ Authorization = "Bearer $accessToken"; 'Content-Type' = 'application/json' }
-
-Write-Host "  Authenticated successfully." -ForegroundColor Green
+Write-Host "  Connected as : $($mgContext.Account)" -ForegroundColor Green
+Write-Host "  Tenant       : $($mgContext.TenantId)" -ForegroundColor Green
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 2 — Resolve Microsoft Graph service principal ID and required permission GUIDs
 # ─────────────────────────────────────────────────────────────────────────────
 Write-Host "[2/5] Resolving Microsoft Graph permission IDs..." -ForegroundColor Yellow
 
-$graphSpResponse = Invoke-RestMethod -Uri `
-    "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId eq '00000003-0000-0000-c000-000000000000'&`$select=id,appId,appRoles" `
-    -Headers $graphHeaders
+$graphSpResponse = Invoke-MgGraphRequest -Method GET `
+    -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId eq '00000003-0000-0000-c000-000000000000'&`$select=id,appId,appRoles" `
+    -OutputType PSObject
 $graphSp = $graphSpResponse.value[0]
 
 # Build a lookup: permission name -> id
@@ -205,34 +210,31 @@ Write-Host "  Resolved $($requiredRoleNames.Count) permissions." -ForegroundColo
 Write-Host "[3/5] Creating app registration '$appName'..." -ForegroundColor Yellow
 
 # Check if app already exists
-$existingApps = Invoke-RestMethod `
+$existingApps = Invoke-MgGraphRequest -Method GET `
     -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=displayName eq '$appName'&`$select=id,appId" `
-    -Headers $graphHeaders
+    -OutputType PSObject
 if ($existingApps.value.Count -gt 0) {
     throw "An app registration named '$appName' already exists (appId: $($existingApps.value[0].appId)).`nDelete it or choose a different CustomerShortName."
 }
 
-$appBody = @{
-    displayName            = $appName
-    signInAudience         = 'AzureADMyOrg'
-    requiredResourceAccess = @(
-        @{
-            resourceAppId  = '00000003-0000-0000-c000-000000000000'
-            resourceAccess = $resourceAccess
-        }
-    )
-    notes = "Created by New-TenantSetup.ps1 for the Application Review solution on $(Get-Date -Format 'yyyy-MM-dd')."
-} | ConvertTo-Json -Depth 10
-
-$app = Invoke-RestMethod -Method Post -Uri 'https://graph.microsoft.com/v1.0/applications' `
-    -Headers $graphHeaders -Body $appBody
+$app = Invoke-MgGraphRequest -Method POST -Uri 'https://graph.microsoft.com/v1.0/applications' `
+    -Body @{
+        displayName            = $appName
+        signInAudience         = 'AzureADMyOrg'
+        requiredResourceAccess = @(
+            @{
+                resourceAppId  = '00000003-0000-0000-c000-000000000000'
+                resourceAccess = @($resourceAccess)
+            }
+        )
+        notes = "Created by New-TenantSetup.ps1 for the Application Review solution on $(Get-Date -Format 'yyyy-MM-dd')."
+    } -OutputType PSObject
 Write-Host "  Created app: $($app.displayName) (appId: $($app.appId), objectId: $($app.id))" -ForegroundColor Green
 
 # Create service principal
 Start-Sleep -Seconds 3   # allow replication
-$spBody = @{ appId = $app.appId } | ConvertTo-Json
-$sp = Invoke-RestMethod -Method Post -Uri 'https://graph.microsoft.com/v1.0/servicePrincipals' `
-    -Headers $graphHeaders -Body $spBody
+$sp = Invoke-MgGraphRequest -Method POST -Uri 'https://graph.microsoft.com/v1.0/servicePrincipals' `
+    -Body @{ appId = $app.appId } -OutputType PSObject
 Write-Host "  Created service principal (objectId: $($sp.id))" -ForegroundColor Green
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -290,22 +292,20 @@ Write-Host "  Public .cer exported: $certFile" -ForegroundColor Green
 # Upload certificate to app registration
 Write-Host "  Uploading public key to app registration..." -ForegroundColor Gray
 $certBase64 = [System.Convert]::ToBase64String($cerBytes)
-$keyBody    = @{
-    keyCredentials = @(
-        @{
-            type        = 'AsymmetricX509Cert'
-            usage       = 'Verify'
-            key         = $certBase64
-            displayName = $certSubject
-            startDateTime = $notBefore.ToString('o')
-            endDateTime   = $notAfter.ToString('o')
-        }
-    )
-} | ConvertTo-Json -Depth 10
-
-Invoke-RestMethod -Method Patch `
+Invoke-MgGraphRequest -Method PATCH `
     -Uri "https://graph.microsoft.com/v1.0/applications/$($app.id)" `
-    -Headers $graphHeaders -Body $keyBody | Out-Null
+    -Body @{
+        keyCredentials = @(
+            @{
+                type          = 'AsymmetricX509Cert'
+                usage         = 'Verify'
+                key           = $certBase64
+                displayName   = $certSubject
+                startDateTime = $notBefore.ToString('o')
+                endDateTime   = $notAfter.ToString('o')
+            }
+        )
+    } | Out-Null
 Write-Host "  Certificate uploaded to app registration." -ForegroundColor Green
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -314,8 +314,9 @@ Write-Host "  Certificate uploaded to app registration." -ForegroundColor Green
 Write-Host "[5/5] Writing tenant config file to $configFile..." -ForegroundColor Yellow
 
 # Resolve actual tenant GUID (the user may have passed a domain)
-$tenantInfo  = Invoke-RestMethod -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id,displayName' `
-    -Headers $graphHeaders
+$tenantInfo       = Invoke-MgGraphRequest -Method GET `
+    -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id,displayName' `
+    -OutputType PSObject
 $resolvedTenantId = $tenantInfo.value[0].id
 
 if ($CertificateStoreInstead) {
