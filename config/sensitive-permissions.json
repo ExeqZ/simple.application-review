@@ -1,0 +1,518 @@
+{
+  "_defenderRiskLevelNote": "defenderRiskLevel reflects the Microsoft Defender for Cloud Apps (MDCA) OAuth app permission severity classification: High / Medium / Low. riskLevel is the internal assessment factoring in abuse potential and blast radius.",
+  "_defenderRiskLevelSource": "https://learn.microsoft.com/en-us/defender-cloud-apps/manage-app-permissions",
+  "sensitivePermissions": [
+
+    // ── Critical internal risk / Defender: High ─────────────────────────────
+    {
+      "id": "9e3f62cf-ca93-4989-b6ce-bf83c28f9fe9",
+      "name": "RoleManagement.ReadWrite.Directory",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Allows full management of Azure AD role assignments and definitions. Can grant Global Admin to any principal.",
+      "category": "Identity & Access"
+    },
+    {
+      "id": "06b708a9-e830-4db3-a914-8e69da51d44f",
+      "name": "AppRoleAssignment.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Can grant any application permission to any app, effectively bypassing all permission controls.",
+      "category": "Identity & Access"
+    },
+    {
+      "id": "1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9",
+      "name": "Application.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Full read/write access to all app registrations and service principals. Can add credentials or permissions to any app.",
+      "category": "Identity & Access"
+    },
+    {
+      "id": "19dbc75e-c2e2-444c-a770-ec69d8559fc7",
+      "name": "Directory.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Read and write all data in the Azure AD directory including users, groups, and devices.",
+      "category": "Directory"
+    },
+    {
+      "id": "e2a3a72e-5f79-4c64-b1b1-878b674786c9",
+      "name": "Mail.ReadWrite",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Read and write access to all mailboxes in the organization. High exfiltration risk.",
+      "category": "Exchange / Mail"
+    },
+    {
+      "id": "b633e1c5-b582-4048-a93e-9f11b44c7e96",
+      "name": "Mail.Send",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Can send email as any user in the organization. High phishing/impersonation risk.",
+      "category": "Exchange / Mail"
+    },
+    {
+      "id": "01d4889c-1287-42c6-ac1f-5d1e02578ef6",
+      "name": "Files.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Read and write access to all files in SharePoint and OneDrive for all users.",
+      "category": "SharePoint / Files"
+    },
+    {
+      "id": "741f803b-c850-494e-b5df-cde7c675a1ca",
+      "name": "User.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Read and write profile data for all users. Can modify passwords, MFA settings, and sensitive attributes.",
+      "category": "Users"
+    },
+    {
+      "id": "62a82d76-70ea-41e2-9197-370581804d09",
+      "name": "Group.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Read and write all group memberships including security groups and Teams. Can escalate via group membership.",
+      "category": "Groups"
+    },
+    {
+      "id": "a82116e5-55eb-4c41-a434-62fe8a61c773",
+      "name": "PrivilegedAccess.ReadWrite.AzureAD",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Manage Privileged Identity Management (PIM) for Azure AD roles. Can activate privileged roles.",
+      "category": "Privileged Access"
+    },
+    {
+      "id": "be74164b-cff1-491c-8741-e671cb536e13",
+      "name": "PrivilegedAccess.ReadWrite.AzureResources",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Manage PIM for Azure resources. Can activate privileged roles for Azure subscriptions.",
+      "category": "Privileged Access"
+    },
+    {
+      "id": "e383f46e-2787-4529-855e-0e479a3ffac0",
+      "name": "MailboxSettings.ReadWrite",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "High",
+      "description": "Read and write mailbox settings for all users including forwarding rules. Used in BEC attacks.",
+      "category": "Exchange / Mail"
+    },
+    {
+      "id": "ef54d2bf-783f-4e0f-bca1-3210c4d670f1",
+      "name": "Calendars.ReadWrite",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "High",
+      "description": "Read and write all calendars. Can expose meeting details and internal schedules.",
+      "category": "Exchange / Calendar"
+    },
+    {
+      "id": "b46ffa80-fe3d-4822-9a1a-c200932d54d0",
+      "name": "Contacts.ReadWrite",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "High",
+      "description": "Read and write all contact data for all users.",
+      "category": "Exchange / Contacts"
+    },
+
+    // ── High internal risk / Defender: Medium ────────────────────────────────
+    {
+      "id": "7ab1d382-f21e-4acd-a863-ba3e13f7da61",
+      "name": "Mail.Read",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "Medium",
+      "description": "Read access to all mailboxes in the organization. Significant data exfiltration risk.",
+      "category": "Exchange / Mail"
+    },
+    {
+      "id": "810c84a8-4a9e-49e6-bf7d-12d183f40d01",
+      "name": "Mail.ReadBasic.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "Medium",
+      "description": "Read basic mail metadata (subject, sender, recipients) for all mailboxes.",
+      "category": "Exchange / Mail"
+    },
+    {
+      "id": "df021288-bdef-4463-88db-98f22de89214",
+      "name": "User.Read.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "Medium",
+      "description": "Read all user profiles including phone numbers, addresses, manager info, and direct reports.",
+      "category": "Users"
+    },
+    {
+      "id": "5b567255-7703-4780-807c-7be8301ae99b",
+      "name": "Group.Read.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "Medium",
+      "description": "Read all groups and their memberships. Can be used to map out org structure and access paths.",
+      "category": "Groups"
+    },
+    {
+      "id": "7ab1d382-f21e-4acd-a863-ba3e13f7da61",
+      "name": "Directory.Read.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "Medium",
+      "description": "Read all directory objects: users, groups, devices, apps. Broad reconnaissance capability.",
+      "category": "Directory"
+    },
+    {
+      "id": "75359482-378d-4052-8f01-80520e7db3cd",
+      "name": "Files.Read.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "Medium",
+      "description": "Read all files in SharePoint and OneDrive across all users. High data exfiltration risk.",
+      "category": "SharePoint / Files"
+    },
+    {
+      "id": "6e472fd1-ad78-48da-a0f0-97ab2c6b769e",
+      "name": "ChannelMessage.Read.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "Medium",
+      "description": "Read all Teams channel messages across the organization.",
+      "category": "Teams"
+    },
+    {
+      "id": "294ce7c9-31ba-490a-ad7d-97a7d075e4ed",
+      "name": "Chat.Read.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "Medium",
+      "description": "Read all Teams 1:1 and group chat messages across the organization.",
+      "category": "Teams"
+    },
+    {
+      "id": "b2e060da-3baf-4687-9611-f4ebc0f0cbde",
+      "name": "Chat.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "Medium",
+      "description": "Read and write all Teams chats across the organization.",
+      "category": "Teams"
+    },
+    {
+      "id": "4a771c9a-1cf2-4609-b88e-3d3e02d539cd",
+      "name": "TeamsAppInstallation.ReadWriteForUser.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "Medium",
+      "description": "Install, update, or remove Teams apps for any user.",
+      "category": "Teams"
+    },
+    {
+      "id": "9492366f-7969-46a4-8d15-ed1a20078fff",
+      "name": "Sites.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Medium",
+      "description": "Read and write all SharePoint sites.",
+      "category": "SharePoint / Files"
+    },
+    {
+      "id": "01c0a623-fc9b-48e9-b794-0756f8e8f067",
+      "name": "Policy.ReadWrite.ConditionalAccess",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Medium",
+      "description": "Read and write Conditional Access policies. Can disable or weaken security controls.",
+      "category": "Security & Compliance"
+    },
+    {
+      "id": "dc5007c0-2d7d-4c42-879c-2dab87571379",
+      "name": "IdentityRiskyUser.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Medium",
+      "description": "Read and manage all risky users. Can dismiss risk for compromised accounts.",
+      "category": "Identity Protection"
+    },
+    {
+      "id": "db06fb33-1953-4b7b-a2ac-f1e2c854f7ae",
+      "name": "SecurityEvents.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Medium",
+      "description": "Read and write all security events in Microsoft 365 Defender.",
+      "category": "Security & Compliance"
+    },
+    {
+      "id": "02e97553-ed7b-43d0-ab3c-5c0254d2bede",
+      "name": "Organization.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Medium",
+      "description": "Read and write organization settings and tenant-level configurations.",
+      "category": "Directory"
+    },
+    {
+      "id": "dbb9058a-0e50-45d7-ae91-66909b5d4664",
+      "name": "Domain.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Medium",
+      "description": "Read and write domain configuration. Can modify DNS verification for custom domains.",
+      "category": "Directory"
+    },
+    {
+      "id": "5ac13192-7ace-4fcf-b828-1a26f28068ee",
+      "name": "EntitlementManagement.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Medium",
+      "description": "Manage access packages and entitlement management. Can grant access to resources.",
+      "category": "Identity & Access"
+    },
+    {
+      "id": "306785c5-c09b-4ba0-a4ee-023f3da3f36f",
+      "name": "OnlineMeetings.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Medium",
+      "description": "Read and write all online meetings. Can access meeting recordings and participant data.",
+      "category": "Teams"
+    },
+    {
+      "id": "45bbb07e-7321-4fd7-a8f6-3ff27e6a81c8",
+      "name": "CallRecords.Read.All",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Medium",
+      "description": "Read call records for all calls and meetings. Exposes communication metadata.",
+      "category": "Teams"
+    },
+
+    // ── Medium internal risk / Defender: Low ─────────────────────────────────
+    {
+      "id": "f217646d-3ca7-4f7e-bac0-e0eedea57298",
+      "name": "AuditLog.Read.All",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Low",
+      "description": "Read all audit log data. Can expose security events, admin activities, and user actions.",
+      "category": "Security & Compliance"
+    },
+    {
+      "id": "230c1aed-a721-4c5d-9cb4-a90514e508ef",
+      "name": "Reports.Read.All",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Low",
+      "description": "Read all usage reports. Can expose user activity patterns and access information.",
+      "category": "Security & Compliance"
+    },
+    {
+      "id": "332a536c-c7ef-4017-ab91-336970924f0d",
+      "name": "Sites.Read.All",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Low",
+      "description": "Read all SharePoint sites and their content metadata.",
+      "category": "SharePoint / Files"
+    },
+
+    // ── Additional commonly seen permissions ─────────────────────────────────
+    {
+      "id": "dbaae8cf-10b5-4b86-a4a1-f871c94c6695",
+      "name": "TeamMember.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "High",
+      "description": "Add and remove members from all Teams. Can be used to gain access to private channels and information.",
+      "category": "Teams"
+    },
+    {
+      "id": "2280dda6-0bfd-44ee-a2f4-cb867cfc4c1e",
+      "name": "Team.ReadBasic.All",
+      "type": "Application",
+      "riskLevel": "Low",
+      "defenderRiskLevel": "Low",
+      "description": "Read basic team metadata for all Teams.",
+      "category": "Teams"
+    },
+    {
+      "id": "59a6b24b-4225-4393-8165-ebaec5f55d7a",
+      "name": "Channel.ReadBasic.All",
+      "type": "Application",
+      "riskLevel": "Low",
+      "defenderRiskLevel": "Low",
+      "description": "Read channel names and descriptions for all Teams channels.",
+      "category": "Teams"
+    },
+    {
+      "id": "8e8e4742-1d95-4f68-9d56-6ee3fe082b94",
+      "name": "DeviceManagementApps.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "High",
+      "description": "Read and write all Intune app management properties. Can deploy or modify managed applications on all enrolled devices.",
+      "category": "Intune / Endpoint"
+    },
+    {
+      "id": "2f51be20-0bb4-4fed-bf7b-db946066c75e",
+      "name": "DeviceManagementManagedDevices.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "High",
+      "description": "Read and write all Intune managed device properties. Can wipe, retire, or modify device compliance policies.",
+      "category": "Intune / Endpoint"
+    },
+    {
+      "id": "9241abd9-d0e6-425a-bd4f-47ba86e767a4",
+      "name": "DeviceManagementConfiguration.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Medium",
+      "description": "Read and write Intune device configuration and compliance policies.",
+      "category": "Intune / Endpoint"
+    },
+    {
+      "id": "7438b122-aefc-4978-80ed-43db9fcc7715",
+      "name": "DeviceManagementRBAC.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "High",
+      "description": "Read and write all Intune RBAC role definitions and assignments.",
+      "category": "Intune / Endpoint"
+    },
+    {
+      "id": "246dd0d5-5bd0-4def-940b-0421030a5b68",
+      "name": "Policy.ReadWrite.ApplicationConfiguration",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Medium",
+      "description": "Read and write app management policies, including token lifetime and credential policies.",
+      "category": "Security & Compliance"
+    },
+    {
+      "id": "be74164b-cff1-491c-8741-e671cb536e14",
+      "name": "Policy.ReadWrite.AuthenticationMethod",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Read and write the authentication method policy. Can disable MFA requirements for users.",
+      "category": "Security & Compliance"
+    },
+    {
+      "id": "50483e42-d915-4231-9639-7fdb7fd190e5",
+      "name": "UserAuthenticationMethod.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Read and write all user authentication methods (MFA, SSPR, FIDO2, etc.). Can remove MFA from any account.",
+      "category": "Identity & Access"
+    },
+    {
+      "id": "3b55498e-47ec-484f-8136-9013221c06a9",
+      "name": "ServicePrincipalEndpointRead.All",
+      "type": "Application",
+      "riskLevel": "Low",
+      "defenderRiskLevel": "Low",
+      "description": "Read service principal endpoint metadata.",
+      "category": "Directory"
+    },
+    {
+      "id": "c7fbd983-d9aa-4fa7-84b8-17382c103bc4",
+      "name": "RoleManagement.Read.All",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Low",
+      "description": "Read all role assignments, role definitions, and role eligibilities across Entra ID and PIM.",
+      "category": "Identity & Access"
+    },
+    {
+      "id": "405a51b5-8d8d-430b-9842-8be4b0e9f324",
+      "name": "Synchronization.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Read and write all Azure AD Connect / cloud sync configuration. Can redirect identity synchronization to attacker-controlled sources.",
+      "category": "Identity & Access"
+    },
+    {
+      "id": "eda39fa6-f8cf-4c3c-a909-432c683e4c9b",
+      "name": "TrustFrameworkKeySet.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Critical",
+      "defenderRiskLevel": "High",
+      "description": "Read and write B2C Identity Experience Framework key sets. Can replace signing keys to forge tokens.",
+      "category": "Identity & Access"
+    },
+    {
+      "id": "7ab1d382-f21e-4acd-a863-ba3e13f7da62",
+      "name": "Calendars.Read",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Medium",
+      "description": "Read all calendars for all users. Exposes meeting schedules and attendees.",
+      "category": "Exchange / Calendar"
+    },
+    {
+      "id": "3aeca27b-ee3a-4c2b-8ded-80376e2134a4",
+      "name": "Notes.Read.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "Medium",
+      "description": "Read all OneNote notebooks across the organization. High data exposure risk.",
+      "category": "SharePoint / Files"
+    },
+    {
+      "id": "89c8469c-83ad-45f7-8ff2-6e3d4285709e",
+      "name": "Notes.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "High",
+      "defenderRiskLevel": "High",
+      "description": "Read and write all OneNote notebooks. Can modify or destroy business-critical notes.",
+      "category": "SharePoint / Files"
+    },
+    {
+      "id": "b2620db1-3bf7-4c5b-9cb9-576d29eac736",
+      "name": "ExternalConnection.ReadWrite.All",
+      "type": "Application",
+      "riskLevel": "Medium",
+      "defenderRiskLevel": "Medium",
+      "description": "Read and write Microsoft Search external connections. Can inject data into search results.",
+      "category": "Search"
+    },
+    {
+      "id": "8116ae0f-55c2-452d-9944-d18420f5b2c8",
+      "name": "ServiceHealth.Read.All",
+      "type": "Application",
+      "riskLevel": "Low",
+      "defenderRiskLevel": "Low",
+      "description": "Read service health status and messages for all Microsoft services.",
+      "category": "Administration"
+    },
+    {
+      "id": "2f3e6f8c-093b-4c57-a58b-ba5ce494a169",
+      "name": "ServiceMessage.Read.All",
+      "type": "Application",
+      "riskLevel": "Low",
+      "defenderRiskLevel": "Low",
+      "description": "Read service announcement messages in the M365 admin message center.",
+      "category": "Administration"
+    }
+  ]
+}

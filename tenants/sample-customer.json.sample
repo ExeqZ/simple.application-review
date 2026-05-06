@@ -1,0 +1,37 @@
+{
+  "_comment": "Rename this file to <customer-shortname>.json (e.g. contoso.json) and fill in your values.",
+  "_authMethods": {
+    "Certificate": "Use a certificate — most secure, recommended for production. Either certificateThumbprint (cert store) or certificatePath (PFX file).",
+    "ClientSecret": "Use a client secret stored in a file. Restrict file permissions (600)."
+  },
+  "tenantId": "aaaaaaaa-0000-0000-0000-000000000001",
+  "tenantName": "Customer Name - Company Ltd",
+  "enabled": true,
+
+  "authMethod": "Certificate",
+  "clientId": "bbbbbbbb-0000-0000-0000-000000000001",
+
+  "_certificateOptions": "Use ONE of the following certificate options:",
+  "certificateThumbprint": "",
+  "certificatePath": "",
+  "certificatePasswordFile": "",
+
+  "_clientSecretOption": "Only required when authMethod=ClientSecret:",
+  "clientSecretFile": "",
+
+  "settings": {
+    "_comment": "Override global defaults for this tenant only. Remove keys to inherit the global default.",
+    "inactivityThresholdDays": 180,
+    "signInLookbackDays": 30,
+    "includeDisabledApps": false,
+    "includeManagedIdentities": true,
+    "includeFirstPartyMicrosoftApps": false
+  },
+
+  "logAnalytics": {
+    "_comment": "Optional: set enabled=true and supply workspaceId to use Log Analytics for extended sign-in history (up to 365+ days). Requires Diagnostic Settings streaming and Log Analytics Reader RBAC on the workspace.",
+    "enabled": false,
+    "workspaceId": "",
+    "lookbackDays": 365
+  }
+}

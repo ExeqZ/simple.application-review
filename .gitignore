@@ -1,0 +1,20 @@
+# Report outputs
+reports/
+
+# Secrets and credentials
+secrets/
+*.pfx
+*.p12
+*.cer
+*.secret
+*.key
+
+# Tenant config files (contain secrets/IDs — gitignored; use sample as template)
+tenants/*.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PowerShell module cache
+PSGetModuleInfo.xml

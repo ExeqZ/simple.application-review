@@ -1,0 +1,87 @@
+{
+  "_comment": "Copy this file to tenants.json and fill in your values. tenants.json is gitignored.",
+  "_authMethods": {
+    "ClientSecret": "Use a client secret stored in a file (recommended: restrict file permissions)",
+    "Certificate": "Use a certificate for authentication (most secure, recommended for production)",
+    "Interactive": "Browser-based interactive login (for ad-hoc use only, not suitable for automation)"
+  },
+  "_setupInstructions": {
+    "multiTenantApp": "Register ONE app in your service provider tenant, mark it as multi-tenant, grant admin consent in each customer tenant.",
+    "perTenantApp": "Register a separate app in each customer tenant for full isolation.",
+    "requiredPermissions": [
+      "Application.Read.All",
+      "Directory.Read.All",
+      "AuditLog.Read.All",
+      "Organization.Read.All"
+    ]
+  },
+  "serviceProvider": {
+    "name": "Contoso MSP",
+    "tenantId": "00000000-0000-0000-0000-000000000000"
+  },
+  "defaultSettings": {
+    "inactivityThresholdDays": 180,
+    "signInLookbackDays": 30,
+    "includeDisabledApps": false,
+    "includeManagedIdentities": true,
+    "includeFirstPartyMicrosoftApps": false,
+    "parallelTenantProcessing": false,
+    "parallelThrottleLimit": 3,
+    "_logAnalyticsNote": "Configure logAnalytics per-tenant below. The app registration needs 'Log Analytics Reader' RBAC on each workspace."
+  },
+  "tenants": [
+    {
+      "tenantId": "aaaaaaaa-0000-0000-0000-000000000001",
+      "tenantName": "Customer A - Contoso Ltd",
+      "enabled": true,
+      "authMethod": "Certificate",
+      "clientId": "bbbbbbbb-0000-0000-0000-000000000001",
+      "certificateThumbprint": "AABBCCDDEEFF00112233445566778899AABBCCDD",
+      "logAnalytics": {
+        "enabled": true,
+        "workspaceId": "cccccccc-0000-0000-0000-000000000001",
+        "lookbackDays": 365
+      },
+      "_note": "Use certificateThumbprint for certs stored in the local certificate store"
+    },
+    {
+      "tenantId": "aaaaaaaa-0000-0000-0000-000000000002",
+      "tenantName": "Customer B - Fabrikam Inc",
+      "enabled": true,
+      "authMethod": "Certificate",
+      "clientId": "bbbbbbbb-0000-0000-0000-000000000002",
+      "certificatePath": "secrets/fabrikam.pfx",
+      "certificatePasswordFile": "secrets/fabrikam.pfx.pass",
+      "logAnalytics": {
+        "enabled": true,
+        "workspaceId": "cccccccc-0000-0000-0000-000000000002",
+        "lookbackDays": 365
+      },
+      "_note": "Use certificatePath for PFX file, certificatePasswordFile for the password file path"
+    },
+    {
+      "tenantId": "aaaaaaaa-0000-0000-0000-000000000003",
+      "tenantName": "Customer C - Adventure Works",
+      "enabled": true,
+      "authMethod": "ClientSecret",
+      "clientId": "bbbbbbbb-0000-0000-0000-000000000003",
+      "clientSecretFile": "secrets/adventureworks.secret",
+      "logAnalytics": {
+        "enabled": false,
+        "workspaceId": "",
+        "lookbackDays": 365,
+        "_note": "Set enabled=true and fill in workspaceId to activate Log Analytics queries"
+      },
+      "_note": "Secret file must contain only the secret value (single line, no trailing newline)"
+    },
+    {
+      "tenantId": "aaaaaaaa-0000-0000-0000-000000000004",
+      "tenantName": "Customer D - Disabled Tenant",
+      "enabled": false,
+      "authMethod": "ClientSecret",
+      "clientId": "bbbbbbbb-0000-0000-0000-000000000004",
+      "clientSecretFile": "secrets/disabled.secret",
+      "_note": "Set enabled=false to skip this tenant without removing the config"
+    }
+  ]
+}
