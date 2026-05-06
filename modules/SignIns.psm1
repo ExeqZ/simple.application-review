@@ -192,7 +192,7 @@ function Get-NonInteractiveSignIns {
 
     $select = 'createdDateTime,userPrincipalName,userId,status,ipAddress,clientAppUsed'
     $filter = "appId eq '$AppId' and createdDateTime ge $Since"
-    $uri    = "https://graph.microsoft.com/v1.0/auditLogs/nonInteractiveSignIns?`$filter=$filter&`$select=$select&`$top=999"
+    $uri    = "https://graph.microsoft.com/beta/auditLogs/nonInteractiveSignIns?`$filter=$filter&`$select=$select&`$top=999"
 
     return Invoke-GraphRequestSafe -AccessToken $AccessToken -Uri $uri -Context "non-interactive sign-ins for app $AppId"
 }
@@ -211,7 +211,7 @@ function Get-ServicePrincipalSignIns {
 
     $select = 'createdDateTime,servicePrincipalName,servicePrincipalId,status,ipAddress,resourceDisplayName,resourceId'
     $filter = "servicePrincipalId eq '$ServicePrincipalId' and createdDateTime ge $Since"
-    $uri    = "https://graph.microsoft.com/v1.0/auditLogs/servicePrincipalSignIns?`$filter=$filter&`$select=$select&`$top=999"
+    $uri    = "https://graph.microsoft.com/beta/auditLogs/servicePrincipalSignIns?`$filter=$filter&`$select=$select&`$top=999"
 
     return Invoke-GraphRequestSafe -AccessToken $AccessToken -Uri $uri -Context "SP sign-ins for $ServicePrincipalId"
 }
@@ -307,33 +307,211 @@ function Get-BulkSignInActivity {
             -InactivityThresholdDays $InactivityThresholdDays
     }
 
-    # ── Graph audit log mode (per-SP) ─────────────────────────────────────────
-    $results   = [System.Collections.Generic.List[object]]::new()
-    $total     = $ServicePrincipals.Count
-    $processed = 0
+    # ── Graph audit log mode (bulk-batched) ──────────────────────────────────────
+    # Instead of N×3 individual API calls, issue ceil(N/15)×3 batched requests
+    # using OData 'or' filters covering up to 15 apps per request.
+    $allAppIds  = @($ServicePrincipals | Select-Object -ExpandProperty appId)
+    $allSpIds   = @($ServicePrincipals | Select-Object -ExpandProperty id)
 
-    foreach ($sp in $ServicePrincipals) {
-        $processed++
-        Write-Progress -Activity 'Retrieving sign-in activity' `
-            -Status "$processed / $total — $($sp.displayName)" `
-            -PercentComplete (($processed / $total) * 100)
+    $interactiveMap    = @{}
+    $nonInteractiveMap = @{}
+    $spSignInMap       = @{}
 
-        $activity = Get-ApplicationSignInActivity `
-            -AccessToken             $AccessToken `
-            -ServicePrincipal        $sp `
-            -LookbackDays            $LookbackDays `
-            -InactivityThresholdDays $InactivityThresholdDays `
-            -SkipDetailedLogs:       $SkipDetailedLogs
+    if (-not $SkipDetailedLogs) {
+        $since      = (Get-Date).ToUniversalTime().AddDays(-$LookbackDays).ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $batchCount = [math]::Ceiling($allAppIds.Count / 15)
+        Write-Host ("  Querying audit logs: {0} service principals in {1} batch(es) per log type..." -f
+            $allAppIds.Count, $batchCount) -ForegroundColor Gray
 
-        $results.Add($activity)
+        # Interactive user sign-ins (v1.0, grouped by appId)
+        $interactiveMap = Invoke-BulkAuditLogQuery `
+            -AccessToken    $AccessToken `
+            -Ids            $allAppIds `
+            -FilterProperty 'appId' `
+            -Endpoint       'https://graph.microsoft.com/v1.0/auditLogs/signIns' `
+            -Since          $since `
+            -SelectFields   'appId,createdDateTime,userPrincipalName,userId,status,ipAddress,location,clientAppUsed,conditionalAccessStatus,riskLevelDuringSignIn'
+
+        # Non-interactive user sign-ins (beta endpoint, grouped by appId)
+        $nonInteractiveMap = Invoke-BulkAuditLogQuery `
+            -AccessToken    $AccessToken `
+            -Ids            $allAppIds `
+            -FilterProperty 'appId' `
+            -Endpoint       'https://graph.microsoft.com/beta/auditLogs/nonInteractiveSignIns' `
+            -Since          $since `
+            -SelectFields   'appId,createdDateTime,userPrincipalName,userId,status,ipAddress,clientAppUsed'
+
+        # Service principal / managed identity sign-ins (beta endpoint, grouped by servicePrincipalId)
+        $spSignInMap = Invoke-BulkAuditLogQuery `
+            -AccessToken    $AccessToken `
+            -Ids            $allSpIds `
+            -FilterProperty 'servicePrincipalId' `
+            -Endpoint       'https://graph.microsoft.com/beta/auditLogs/servicePrincipalSignIns' `
+            -Since          $since `
+            -SelectFields   'servicePrincipalId,createdDateTime,servicePrincipalName,status,ipAddress,resourceDisplayName,resourceId'
     }
 
-    Write-Progress -Activity 'Retrieving sign-in activity' -Completed
+    # ── Aggregate per SP from the bulk lookup maps ─────────────────────────────
+    $results = [System.Collections.Generic.List[object]]::new()
+    $total   = $ServicePrincipals.Count
+    $idx     = 0
+
+    foreach ($sp in $ServicePrincipals) {
+        $idx++
+        Write-Progress -Activity 'Aggregating sign-in activity' `
+            -Status "$idx / $total — $($sp.displayName)" `
+            -PercentComplete (($idx / $total) * 100)
+
+        # Source 1: signInActivity timestamps already on the SP object (no extra API call)
+        $sia                  = $sp.signInActivity
+        $lastInteractive      = Parse-NullableDate $sia.lastSignInDateTime
+        $lastNonInteractive   = Parse-NullableDate $sia.lastNonInteractiveSignInDateTime
+        $lastServicePrincipal = Parse-NullableDate $sia.lastServicePrincipalSignInDateTime
+        $lastSeenViaSp        = ($lastInteractive, $lastNonInteractive, $lastServicePrincipal |
+                                 Where-Object { $_ } | Sort-Object -Descending | Select-Object -First 1)
+
+        # Source 2: audit log records from the bulk maps
+        if ($SkipDetailedLogs) {
+            $interactiveLogs    = @()
+            $nonInteractiveLogs = @()
+            $spSignInLogs       = @()
+            $auditLogsAvailable = $false
+        }
+        else {
+            $interactiveLogs    = @($interactiveMap[$sp.appId])
+            $nonInteractiveLogs = @($nonInteractiveMap[$sp.appId])
+            $spSignInLogs       = @($spSignInMap[$sp.id])
+            $auditLogsAvailable = $true
+        }
+
+        $allLogDates = @(
+            $interactiveLogs    | Select-Object -ExpandProperty createdDateTime | ForEach-Object { Parse-NullableDate $_ }
+            $nonInteractiveLogs | Select-Object -ExpandProperty createdDateTime | ForEach-Object { Parse-NullableDate $_ }
+            $spSignInLogs       | Select-Object -ExpandProperty createdDateTime | ForEach-Object { Parse-NullableDate $_ }
+        ) | Where-Object { $_ }
+
+        $lastSeenViaLogs = $allLogDates | Sort-Object -Descending | Select-Object -First 1
+        $lastSeenOverall = ($lastSeenViaSp, $lastSeenViaLogs |
+                            Where-Object { $_ } | Sort-Object -Descending | Select-Object -First 1)
+
+        $daysSinceLastSeen = $null
+        $isInactive        = $null
+        if ($lastSeenOverall) {
+            $daysSinceLastSeen = [int]((Get-Date).ToUniversalTime() - $lastSeenOverall).TotalDays
+            $isInactive        = $daysSinceLastSeen -gt $InactivityThresholdDays
+        }
+        else {
+            $isInactive = $true
+        }
+
+        $distinctInteractiveUsers = @($interactiveLogs |
+            Where-Object { $_.userPrincipalName } |
+            Select-Object -ExpandProperty userPrincipalName -Unique)
+
+        $distinctSpSignIns = @($spSignInLogs |
+            Where-Object { $_.servicePrincipalName } |
+            Select-Object -ExpandProperty servicePrincipalName -Unique)
+
+        $totalSignIns  = $interactiveLogs.Count + $nonInteractiveLogs.Count + $spSignInLogs.Count
+        $failedSignIns = @(
+            $interactiveLogs    | Where-Object { $_.status.errorCode -ne 0 }
+            $nonInteractiveLogs | Where-Object { $_.status.errorCode -ne 0 }
+            $spSignInLogs       | Where-Object { $_.status.errorCode -ne 0 }
+        ).Count
+        $failureRate = if ($totalSignIns -gt 0) { [math]::Round(($failedSignIns / $totalSignIns) * 100, 1) } else { 0 }
+
+        $results.Add([PSCustomObject]@{
+            ServicePrincipalId            = $sp.id
+            DisplayName                   = $sp.displayName
+            LastInteractiveSignIn         = $lastInteractive
+            LastNonInteractiveSignIn      = $lastNonInteractive
+            LastServicePrincipalSignIn    = $lastServicePrincipal
+            LastSeenOverall               = $lastSeenOverall
+            DaysSinceLastSignIn           = $daysSinceLastSeen
+            IsInactive                    = $isInactive
+            InactivityThresholdDays       = $InactivityThresholdDays
+            AuditLogsQueried              = $auditLogsAvailable
+            LookbackDays                  = $LookbackDays
+            TotalSignInsInWindow          = $totalSignIns
+            InteractiveSignInsInWindow    = $interactiveLogs.Count
+            NonInteractiveSignInsInWindow = $nonInteractiveLogs.Count
+            SpSignInsInWindow             = $spSignInLogs.Count
+            FailedSignInsInWindow         = $failedSignIns
+            FailureRatePercent            = $failureRate
+            DistinctInteractiveUsers      = $distinctInteractiveUsers
+            DistinctInteractiveUserCount  = $distinctInteractiveUsers.Count
+            DistinctSpCallers             = $distinctSpSignIns
+            DistinctSpCallerCount         = $distinctSpSignIns.Count
+        })
+    }
+
+    Write-Progress -Activity 'Aggregating sign-in activity' -Completed
     return $results
 }
 
 # ─── Internal helpers ────────────────────────────────────────────────────────
+function Invoke-BulkAuditLogQuery {
+    <#
+    .SYNOPSIS
+        Issues batched OData filter queries for multiple IDs against a single audit log
+        endpoint and returns a hashtable mapping each ID to a list of matching records.
 
+    .DESCRIPTION
+        Batches IDs into groups of $BatchSize, building one OData 'or' filter per batch.
+        This reduces N individual requests to ceil(N/BatchSize) requests per endpoint.
+
+    .PARAMETER Ids
+        Array of ID strings to query (appIds or servicePrincipalIds).
+
+    .PARAMETER FilterProperty
+        The OData property to filter on: 'appId' or 'servicePrincipalId'.
+
+    .PARAMETER Endpoint
+        Full URI of the audit log endpoint (without query string).
+
+    .PARAMETER Since
+        ISO 8601 UTC lower-bound datetime string, e.g. '2026-04-06T00:00:00Z'.
+
+    .PARAMETER SelectFields
+        Comma-separated list of fields for `$select.
+
+    .PARAMETER BatchSize
+        Maximum number of IDs per request. Defaults to 15.
+    #>
+    param(
+        [string]   $AccessToken,
+        [string[]] $Ids,
+        [string]   $FilterProperty,
+        [string]   $Endpoint,
+        [string]   $Since,
+        [string]   $SelectFields,
+        [int]      $BatchSize = 15
+    )
+
+    # Pre-populate an empty list for every requested ID so callers always get a result
+    $resultMap = @{}
+    foreach ($id in $Ids) { $resultMap[$id] = [System.Collections.Generic.List[object]]::new() }
+
+    for ($i = 0; $i -lt $Ids.Count; $i += $BatchSize) {
+        $batch    = $Ids[$i .. [math]::Min($i + $BatchSize - 1, $Ids.Count - 1)]
+        $batchNum = [math]::Floor($i / $BatchSize) + 1
+        $orParts  = $batch | ForEach-Object { "$FilterProperty eq '$_'" }
+        $filter   = "($($orParts -join ' or ')) and createdDateTime ge $Since"
+        $uri      = "${Endpoint}?`$filter=$([Uri]::EscapeDataString($filter))&`$select=$SelectFields&`$top=999"
+
+        $records = Invoke-GraphRequestSafe -AccessToken $AccessToken -Uri $uri `
+            -Context "bulk $FilterProperty batch $batchNum ($($batch.Count) ids @ $Endpoint)"
+
+        foreach ($record in $records) {
+            $key = $record.$FilterProperty
+            if ($key -and $resultMap.ContainsKey($key)) {
+                $resultMap[$key].Add($record)
+            }
+        }
+    }
+
+    return $resultMap
+}
 function Invoke-GraphRequestSafe {
     <#
     .SYNOPSIS
