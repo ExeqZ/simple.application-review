@@ -129,195 +129,155 @@ function Get-BulkSignInActivityFromLogAnalytics {
     $enterpriseApps = @($ServicePrincipals | Where-Object { $_._principalType -eq 'EnterpriseApplication' })
     $managedIds     = @($ServicePrincipals | Where-Object { $_._principalType -eq 'ManagedIdentity'       })
 
-    # Build AppId → SP object ID mapping (interactive/non-interactive logs are keyed by AppId)
+    # Build AppId → SP object ID mapping
     $appIdToSpId = @{}
-    foreach ($sp in $enterpriseApps) { $appIdToSpId[$sp.appId] = $sp.id }
+    foreach ($sp in $ServicePrincipals) { $appIdToSpId[$sp.appId] = $sp.id }
 
     # ── Per-SP accumulators ───────────────────────────────────────────────────
     $spData = @{}
     foreach ($sp in $ServicePrincipals) {
         $spData[$sp.id] = @{
-            InteractiveCount    = 0
-            FailedInteractive   = 0
-            LastInteractive     = $null
-            NonInteractiveCount = 0
+            InteractiveCount     = 0
+            FailedInteractive    = 0
+            LastInteractive      = $null
+            NonInteractiveCount  = 0
             FailedNonInteractive = 0
-            LastNonInteractive  = $null
-            SpCount             = 0
-            FailedSp            = 0
-            LastSp              = $null
-            DistinctUsers       = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-            DistinctCallers     = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            LastNonInteractive   = $null
+            SpCount              = 0
+            FailedSp             = 0
+            LastSp               = $null
+            MiCount              = 0
+            FailedMi             = 0
+            LastMi               = $null
+            DistinctUsers        = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            DistinctCallers      = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         }
     }
 
-    # ── 1. Interactive sign-ins (SigninLogs, filtered by AppId) ──────────────
-    if ($enterpriseApps.Count -gt 0) {
-        $allAppIds = @($enterpriseApps | Select-Object -ExpandProperty appId)
-        Write-Progress -Id 2 -Activity 'Log Analytics' -Status 'Querying SigninLogs (interactive)...' -PercentComplete 10
+    # ── Single efficient KQL query per batch using join pattern ────────────────
+    # Instead of 4 separate queries per table, issue 1 query per batch that
+    # joins all 4 sign-in tables against a datatable of AppIds.
+    $allAppIds = @($ServicePrincipals | Select-Object -ExpandProperty appId)
+    $totalBatches = [math]::Ceiling($allAppIds.Count / $BatchSize)
+    Write-Host ("  Log Analytics: querying {0} apps in {1} batch(es) using join pattern..." -f
+        $allAppIds.Count, $totalBatches) -ForegroundColor Gray
 
-        for ($i = 0; $i -lt $allAppIds.Count; $i += $BatchSize) {
-            $batch  = $allAppIds[$i..([math]::Min($i + $BatchSize - 1, $allAppIds.Count - 1))]
-            $idsArr = ($batch | ForEach-Object { "`"$_`"" }) -join ','
+    for ($i = 0; $i -lt $allAppIds.Count; $i += $BatchSize) {
+        $batch    = $allAppIds[$i..([math]::Min($i + $BatchSize - 1, $allAppIds.Count - 1))]
+        $batchNum = [math]::Floor($i / $BatchSize) + 1
+        Write-Progress -Id 2 -Activity 'Log Analytics' `
+            -Status "Batch $batchNum / $totalBatches" `
+            -PercentComplete (($batchNum / $totalBatches) * 100)
 
-            $query = @"
-let lookback = ${LookbackDays}d;
-let appIds = dynamic([$idsArr]);
-SigninLogs
-| where TimeGenerated > ago(lookback)
-| where AppId in (appIds)
-| summarize
-    TotalCount  = count(),
-    FailedCount = countif(ResultType != "0"),
-    LastSignIn  = max(TimeGenerated),
-    UniqueUsers = make_set(UserPrincipalName, 500)
-  by AppId
-"@
-            $rows = Invoke-LogAnalyticsQuerySafe -AccessToken $AccessToken -WorkspaceId $WorkspaceId `
-                -Query $query -TableDescription 'SigninLogs'
-
-            foreach ($row in $rows) {
-                $spId = $appIdToSpId[$row.AppId]
-                if (-not $spId -or -not $spData.ContainsKey($spId)) { continue }
-
-                $spData[$spId].InteractiveCount  += [int]($row.TotalCount ?? 0)
-                $spData[$spId].FailedInteractive += [int]($row.FailedCount ?? 0)
-
-                $d = ConvertFrom-LADate $row.LastSignIn
-                if ($d -and (-not $spData[$spId].LastInteractive -or $d -gt $spData[$spId].LastInteractive)) {
-                    $spData[$spId].LastInteractive = $d
-                }
-
-                # UniqueUsers is a dynamic column — may be a string (JSON) or already an array
-                $users = Expand-LADynamic $row.UniqueUsers
-                foreach ($u in $users) { if ($u) { $spData[$spId].DistinctUsers.Add($u) | Out-Null } }
-            }
-        }
-    }
-
-    # ── 2. Non-interactive sign-ins (AADNonInteractiveUserSignInLogs) ─────────
-    if ($enterpriseApps.Count -gt 0) {
-        $allAppIds = @($enterpriseApps | Select-Object -ExpandProperty appId)
-        Write-Progress -Id 2 -Activity 'Log Analytics' -Status 'Querying AADNonInteractiveUserSignInLogs...' -PercentComplete 35
-
-        for ($i = 0; $i -lt $allAppIds.Count; $i += $BatchSize) {
-            $batch  = $allAppIds[$i..([math]::Min($i + $BatchSize - 1, $allAppIds.Count - 1))]
-            $idsArr = ($batch | ForEach-Object { "`"$_`"" }) -join ','
-
-            $query = @"
-let lookback = ${LookbackDays}d;
-let appIds = dynamic([$idsArr]);
-AADNonInteractiveUserSignInLogs
-| where TimeGenerated > ago(lookback)
-| where AppId in (appIds)
-| summarize
-    TotalCount  = count(),
-    FailedCount = countif(ResultType != "0"),
-    LastSignIn  = max(TimeGenerated)
-  by AppId
-"@
-            $rows = Invoke-LogAnalyticsQuerySafe -AccessToken $AccessToken -WorkspaceId $WorkspaceId `
-                -Query $query -TableDescription 'AADNonInteractiveUserSignInLogs'
-
-            foreach ($row in $rows) {
-                $spId = $appIdToSpId[$row.AppId]
-                if (-not $spId -or -not $spData.ContainsKey($spId)) { continue }
-
-                $spData[$spId].NonInteractiveCount   += [int]($row.TotalCount ?? 0)
-                $spData[$spId].FailedNonInteractive  += [int]($row.FailedCount ?? 0)
-
-                $d = ConvertFrom-LADate $row.LastSignIn
-                if ($d -and (-not $spData[$spId].LastNonInteractive -or $d -gt $spData[$spId].LastNonInteractive)) {
-                    $spData[$spId].LastNonInteractive = $d
-                }
-            }
-        }
-    }
-
-    # ── 3. Service principal sign-ins (AADServicePrincipalSignInLogs) ─────────
-    $allSpIds = @($ServicePrincipals | Select-Object -ExpandProperty id)
-    Write-Progress -Id 2 -Activity 'Log Analytics' -Status 'Querying AADServicePrincipalSignInLogs...' -PercentComplete 60
-
-    for ($i = 0; $i -lt $allSpIds.Count; $i += $BatchSize) {
-        $batch  = $allSpIds[$i..([math]::Min($i + $BatchSize - 1, $allSpIds.Count - 1))]
-        $idsArr = ($batch | ForEach-Object { "`"$_`"" }) -join ','
+        # Build the datatable entries for this batch
+        $datatableRows = ($batch | ForEach-Object { "`"$_`"" }) -join ",`n    "
 
         $query = @"
 let lookback = ${LookbackDays}d;
-let spIds = dynamic([$idsArr]);
-AADServicePrincipalSignInLogs
-| where TimeGenerated > ago(lookback)
-| where ServicePrincipalId in (spIds)
-| summarize
-    TotalCount   = count(),
-    FailedCount  = countif(ResultType != "0"),
-    LastSignIn   = max(TimeGenerated),
-    CallerNames  = make_set(ServicePrincipalName, 200)
-  by ServicePrincipalId
+let AppIds = datatable(AppId: string)
+[
+    $datatableRows
+];
+AppIds
+| join kind=leftouter (
+    SigninLogs
+    | where TimeGenerated > ago(lookback)
+    | summarize
+        SignInCount     = count(),
+        FailedSignIns  = countif(ResultType != "0"),
+        LastSignIn     = max(TimeGenerated),
+        UniqueUsers    = make_set(UserPrincipalName, 500)
+      by AppId
+) on AppId
+| join kind=leftouter (
+    AADNonInteractiveUserSignInLogs
+    | where TimeGenerated > ago(lookback)
+    | summarize
+        NonInteractiveCount  = count(),
+        FailedNonInteractive = countif(ResultType != "0"),
+        LastNonInteractive   = max(TimeGenerated)
+      by AppId
+) on AppId
+| join kind=leftouter (
+    AADServicePrincipalSignInLogs
+    | where TimeGenerated > ago(lookback)
+    | summarize
+        SPSignInCount  = count(),
+        FailedSP       = countif(ResultType != "0"),
+        LastSPSignIn   = max(TimeGenerated),
+        CallerNames    = make_set(ServicePrincipalName, 200)
+      by AppId
+) on AppId
+| join kind=leftouter (
+    AADManagedIdentitySignInLogs
+    | where TimeGenerated > ago(lookback)
+    | summarize
+        MISignInCount  = count(),
+        FailedMI       = countif(ResultType != "0"),
+        LastMISignIn   = max(TimeGenerated)
+      by AppId
+) on AppId
+| project
+    AppId = AppId,
+    SignInCount              = coalesce(SignInCount, 0),
+    FailedSignIns           = coalesce(FailedSignIns, 0),
+    LastSignIn,
+    UniqueUsers,
+    NonInteractiveCount     = coalesce(NonInteractiveCount, 0),
+    FailedNonInteractive    = coalesce(FailedNonInteractive, 0),
+    LastNonInteractive,
+    SPSignInCount           = coalesce(SPSignInCount, 0),
+    FailedSP                = coalesce(FailedSP, 0),
+    LastSPSignIn,
+    CallerNames,
+    MISignInCount           = coalesce(MISignInCount, 0),
+    FailedMI                = coalesce(FailedMI, 0),
+    LastMISignIn
 "@
         $rows = Invoke-LogAnalyticsQuerySafe -AccessToken $AccessToken -WorkspaceId $WorkspaceId `
-            -Query $query -TableDescription 'AADServicePrincipalSignInLogs'
+            -Query $query -TableDescription "bulk join batch $batchNum"
 
         foreach ($row in $rows) {
-            if (-not $spData.ContainsKey($row.ServicePrincipalId)) { continue }
-            $spId = $row.ServicePrincipalId
+            $spId = $appIdToSpId[$row.AppId]
+            if (-not $spId -or -not $spData.ContainsKey($spId)) { continue }
 
-            $spData[$spId].SpCount  += [int]($row.TotalCount ?? 0)
-            $spData[$spId].FailedSp += [int]($row.FailedCount ?? 0)
-
+            # Interactive
+            $spData[$spId].InteractiveCount  += [int]($row.SignInCount ?? 0)
+            $spData[$spId].FailedInteractive += [int]($row.FailedSignIns ?? 0)
             $d = ConvertFrom-LADate $row.LastSignIn
+            if ($d -and (-not $spData[$spId].LastInteractive -or $d -gt $spData[$spId].LastInteractive)) {
+                $spData[$spId].LastInteractive = $d
+            }
+            $users = Expand-LADynamic $row.UniqueUsers
+            foreach ($u in $users) { if ($u) { $spData[$spId].DistinctUsers.Add($u) | Out-Null } }
+
+            # Non-interactive
+            $spData[$spId].NonInteractiveCount   += [int]($row.NonInteractiveCount ?? 0)
+            $spData[$spId].FailedNonInteractive  += [int]($row.FailedNonInteractive ?? 0)
+            $d = ConvertFrom-LADate $row.LastNonInteractive
+            if ($d -and (-not $spData[$spId].LastNonInteractive -or $d -gt $spData[$spId].LastNonInteractive)) {
+                $spData[$spId].LastNonInteractive = $d
+            }
+
+            # Service principal
+            $spData[$spId].SpCount  += [int]($row.SPSignInCount ?? 0)
+            $spData[$spId].FailedSp += [int]($row.FailedSP ?? 0)
+            $d = ConvertFrom-LADate $row.LastSPSignIn
             if ($d -and (-not $spData[$spId].LastSp -or $d -gt $spData[$spId].LastSp)) {
                 $spData[$spId].LastSp = $d
             }
-
             $callers = Expand-LADynamic $row.CallerNames
             foreach ($c in $callers) { if ($c) { $spData[$spId].DistinctCallers.Add($c) | Out-Null } }
-        }
-    }
 
-    # ── 4. Managed identity sign-ins (AADManagedIdentitySignInLogs) ───────────
-    if ($managedIds.Count -gt 0) {
-        $allMiIds = @($managedIds | Select-Object -ExpandProperty id)
-        Write-Progress -Id 2 -Activity 'Log Analytics' -Status 'Querying AADManagedIdentitySignInLogs...' -PercentComplete 80
-
-        for ($i = 0; $i -lt $allMiIds.Count; $i += $BatchSize) {
-            $batch  = $allMiIds[$i..([math]::Min($i + $BatchSize - 1, $allMiIds.Count - 1))]
-            $idsArr = ($batch | ForEach-Object { "`"$_`"" }) -join ','
-
-            $query = @"
-let lookback = ${LookbackDays}d;
-let spIds = dynamic([$idsArr]);
-AADManagedIdentitySignInLogs
-| where TimeGenerated > ago(lookback)
-| where ServicePrincipalId in (spIds)
-| summarize
-    TotalCount  = count(),
-    FailedCount = countif(ResultType != "0"),
-    LastSignIn  = max(TimeGenerated),
-    Resources   = make_set(ResourceDisplayName, 100)
-  by ServicePrincipalId
-"@
-            $rows = Invoke-LogAnalyticsQuerySafe -AccessToken $AccessToken -WorkspaceId $WorkspaceId `
-                -Query $query -TableDescription 'AADManagedIdentitySignInLogs'
-
-            foreach ($row in $rows) {
-                if (-not $spData.ContainsKey($row.ServicePrincipalId)) { continue }
-                $spId = $row.ServicePrincipalId
-
-                # MI sign-ins appear in both AADServicePrincipalSignInLogs and AADManagedIdentitySignInLogs.
-                # Only add MI-table counts when the SP-table returned nothing to avoid double-counting.
-                if ($spData[$spId].SpCount -eq 0) {
-                    $spData[$spId].SpCount  += [int]($row.TotalCount ?? 0)
-                    $spData[$spId].FailedSp += [int]($row.FailedCount ?? 0)
-                }
-
-                $d = ConvertFrom-LADate $row.LastSignIn
-                if ($d -and (-not $spData[$spId].LastSp -or $d -gt $spData[$spId].LastSp)) {
-                    $spData[$spId].LastSp = $d
-                }
-
-                $resources = Expand-LADynamic $row.Resources
-                foreach ($r in $resources) { if ($r) { $spData[$spId].DistinctCallers.Add($r) | Out-Null } }
+            # Managed identity (add to SP counts to avoid double-counting if both tables overlap)
+            $miCount = [int]($row.MISignInCount ?? 0)
+            if ($miCount -gt 0 -and $spData[$spId].SpCount -eq 0) {
+                $spData[$spId].SpCount  += $miCount
+                $spData[$spId].FailedSp += [int]($row.FailedMI ?? 0)
+            }
+            $d = ConvertFrom-LADate $row.LastMISignIn
+            if ($d -and (-not $spData[$spId].LastSp -or $d -gt $spData[$spId].LastSp)) {
+                $spData[$spId].LastSp = $d
             }
         }
     }

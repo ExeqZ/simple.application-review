@@ -166,8 +166,8 @@ function Build-CombinedResult {
 
 function ConvertTo-FlatCsvRow {
     param([object]$Row)
-    # Return a flat ordered object (no nested arrays) suitable for Export-Csv
-    [ordered]@{
+    # Return a flat PSCustomObject (no nested arrays) suitable for Export-Csv
+    [PSCustomObject][ordered]@{
         ObjectId                      = $Row.ObjectId
         AppId                         = $Row.AppId
         DisplayName                   = $Row.DisplayName
@@ -186,12 +186,12 @@ function ConvertTo-FlatCsvRow {
         DefenderHighPermissions       = $Row.DefenderHighPermissions
         DefenderMediumPermissions     = $Row.DefenderMediumPermissions
         DefenderLowPermissions        = $Row.DefenderLowPermissions
-        LastSeenOverall               = $Row.LastSeenOverall
+        LastSeenOverall               = if ($Row.LastSeenOverall) { $Row.LastSeenOverall.ToString('o') } else { '' }
         DaysSinceLastSignIn           = $Row.DaysSinceLastSignIn
         IsInactive                    = $Row.IsInactive
-        LastInteractiveSignIn         = $Row.LastInteractiveSignIn
-        LastNonInteractiveSignIn      = $Row.LastNonInteractiveSignIn
-        LastServicePrincipalSignIn    = $Row.LastServicePrincipalSignIn
+        LastInteractiveSignIn         = if ($Row.LastInteractiveSignIn) { $Row.LastInteractiveSignIn.ToString('o') } else { '' }
+        LastNonInteractiveSignIn      = if ($Row.LastNonInteractiveSignIn) { $Row.LastNonInteractiveSignIn.ToString('o') } else { '' }
+        LastServicePrincipalSignIn    = if ($Row.LastServicePrincipalSignIn) { $Row.LastServicePrincipalSignIn.ToString('o') } else { '' }
         TotalSignInsInWindow          = $Row.TotalSignInsInWindow
         InteractiveSignInsInWindow    = $Row.InteractiveSignInsInWindow
         NonInteractiveSignInsInWindow = $Row.NonInteractiveSignInsInWindow
@@ -199,7 +199,7 @@ function ConvertTo-FlatCsvRow {
         FailedSignInsInWindow         = $Row.FailedSignInsInWindow
         FailureRatePercent            = $Row.FailureRatePercent
         DistinctInteractiveUserCount  = $Row.DistinctInteractiveUserCount
-        DistinctInteractiveUsers      = $Row.DistinctInteractiveUsers
+        DistinctInteractiveUsers      = if ($Row.DistinctInteractiveUsers) { $Row.DistinctInteractiveUsers } else { '' }
         DistinctSpCallerCount         = $Row.DistinctSpCallerCount
     }
 }
@@ -234,7 +234,7 @@ function Build-HtmlReport {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Application Review — $([System.Web.HttpUtility]::HtmlEncode($TenantName))</title>
+<title>Application Review — $([System.Net.WebUtility]::HtmlEncode($TenantName))</title>
 <style>
   :root {
     --clr-critical: #b91c1c; --clr-critical-bg: #fef2f2;
@@ -303,7 +303,7 @@ function Build-HtmlReport {
 <body>
 <header>
   <h1>Enterprise Application &amp; Managed Identity Review</h1>
-  <p>Tenant: $([System.Web.HttpUtility]::HtmlEncode($TenantName)) &nbsp;|&nbsp; ID: $TenantId &nbsp;|&nbsp; Generated: $generated UTC</p>
+  <p>Tenant: $([System.Net.WebUtility]::HtmlEncode($TenantName)) &nbsp;|&nbsp; ID: $TenantId &nbsp;|&nbsp; Generated: $generated UTC</p>
 </header>
 
 <div class="summary">
@@ -382,7 +382,7 @@ function Build-HtmlTableRow {
     }
 
     $defBadge = if ($defClass) {
-        "<span class='def-badge $defClass'>$([System.Web.HttpUtility]::HtmlEncode($Row.OverallDefenderRiskLevel))</span>"
+        "<span class='def-badge $defClass'>$([System.Net.WebUtility]::HtmlEncode($Row.OverallDefenderRiskLevel))</span>"
     } else { '<span style="color:#9ca3af">—</span>' }
 
     # Build sensitive permission list for the cell
@@ -400,8 +400,8 @@ function Build-HtmlTableRow {
             ForEach-Object {
                 $pClass = "perm-$($_.RiskLevel.ToLower())"
                 $dClass = if ($_.DefenderRiskLevel -ne 'Unknown') { "def-badge def-$($_.DefenderRiskLevel.ToLower())" } else { '' }
-                $dTag   = if ($dClass) { " <span class='$dClass'>D:$([System.Web.HttpUtility]::HtmlEncode($_.DefenderRiskLevel))</span>" } else { '' }
-                "<span class='$pClass'>$([System.Web.HttpUtility]::HtmlEncode($_.PermissionName))</span>$dTag"
+                $dTag   = if ($dClass) { " <span class='$dClass'>D:$([System.Net.WebUtility]::HtmlEncode($_.DefenderRiskLevel))</span>" } else { '' }
+                "<span class='$pClass'>$([System.Net.WebUtility]::HtmlEncode($_.PermissionName))</span>$dTag"
             }
         $preview  = ($permLines | Select-Object -First 3) -join '<br>'
         $remaining = $allSensitive.Count - 3
@@ -437,9 +437,9 @@ function Build-HtmlTableRow {
         "<span style='font-size:0.65rem;background:#dbeafe;color:#1e40af;padding:2px 6px;border-radius:4px'>EA</span>"
     }
 
-    $name    = [System.Web.HttpUtility]::HtmlEncode($Row.DisplayName)
-    $appId   = [System.Web.HttpUtility]::HtmlEncode($Row.AppId)
-    $isInact = ($Row.IsInactive).ToString().ToLower()
+    $name    = [System.Net.WebUtility]::HtmlEncode($Row.DisplayName)
+    $appId   = [System.Net.WebUtility]::HtmlEncode($Row.AppId)
+    $isInact = if ($Row.IsInactive) { 'true' } else { 'false' }
 
     return @"
 <tr data-risk="$($Row.OverallRiskLevel)" data-inactive="$isInact">

@@ -191,8 +191,8 @@ function Get-NonInteractiveSignIns {
     )
 
     $select = 'createdDateTime,userPrincipalName,userId,status,ipAddress,clientAppUsed'
-    $filter = "appId eq '$AppId' and createdDateTime ge $Since"
-    $uri    = "https://graph.microsoft.com/beta/auditLogs/nonInteractiveSignIns?`$filter=$filter&`$select=$select&`$top=999"
+    $filter = "appId eq '$AppId' and createdDateTime ge $Since and signInEventTypes/any(t: t eq 'nonInteractiveUser')"
+    $uri    = "https://graph.microsoft.com/beta/auditLogs/signIns?`$filter=$([Uri]::EscapeDataString($filter))&`$select=$select&`$top=999&`$count=true"
 
     return Invoke-GraphRequestSafe -AccessToken $AccessToken -Uri $uri -Context "non-interactive sign-ins for app $AppId"
 }
@@ -210,8 +210,8 @@ function Get-ServicePrincipalSignIns {
     )
 
     $select = 'createdDateTime,servicePrincipalName,servicePrincipalId,status,ipAddress,resourceDisplayName,resourceId'
-    $filter = "servicePrincipalId eq '$ServicePrincipalId' and createdDateTime ge $Since"
-    $uri    = "https://graph.microsoft.com/beta/auditLogs/servicePrincipalSignIns?`$filter=$filter&`$select=$select&`$top=999"
+    $filter = "servicePrincipalId eq '$ServicePrincipalId' and createdDateTime ge $Since and signInEventTypes/any(t: t eq 'servicePrincipal')"
+    $uri    = "https://graph.microsoft.com/beta/auditLogs/signIns?`$filter=$([Uri]::EscapeDataString($filter))&`$select=$select&`$top=999&`$count=true"
 
     return Invoke-GraphRequestSafe -AccessToken $AccessToken -Uri $uri -Context "SP sign-ins for $ServicePrincipalId"
 }
@@ -323,31 +323,34 @@ function Get-BulkSignInActivity {
         Write-Host ("  Querying audit logs: {0} service principals in {1} batch(es) per log type..." -f
             $allAppIds.Count, $batchCount) -ForegroundColor Gray
 
-        # Interactive user sign-ins (v1.0, grouped by appId)
+        # Interactive user sign-ins (beta, filtered by signInEventTypes)
         $interactiveMap = Invoke-BulkAuditLogQuery `
             -AccessToken    $AccessToken `
             -Ids            $allAppIds `
             -FilterProperty 'appId' `
-            -Endpoint       'https://graph.microsoft.com/v1.0/auditLogs/signIns' `
+            -Endpoint       'https://graph.microsoft.com/beta/auditLogs/signIns' `
             -Since          $since `
+            -ExtraFilter    "signInEventTypes/any(t: t eq 'interactiveUser')" `
             -SelectFields   'appId,createdDateTime,userPrincipalName,userId,status,ipAddress,location,clientAppUsed,conditionalAccessStatus,riskLevelDuringSignIn'
 
-        # Non-interactive user sign-ins (beta endpoint, grouped by appId)
+        # Non-interactive user sign-ins (beta, same endpoint with different type filter)
         $nonInteractiveMap = Invoke-BulkAuditLogQuery `
             -AccessToken    $AccessToken `
             -Ids            $allAppIds `
             -FilterProperty 'appId' `
-            -Endpoint       'https://graph.microsoft.com/beta/auditLogs/nonInteractiveSignIns' `
+            -Endpoint       'https://graph.microsoft.com/beta/auditLogs/signIns' `
             -Since          $since `
+            -ExtraFilter    "signInEventTypes/any(t: t eq 'nonInteractiveUser')" `
             -SelectFields   'appId,createdDateTime,userPrincipalName,userId,status,ipAddress,clientAppUsed'
 
-        # Service principal / managed identity sign-ins (beta endpoint, grouped by servicePrincipalId)
+        # Service principal / managed identity sign-ins (beta, same endpoint)
         $spSignInMap = Invoke-BulkAuditLogQuery `
             -AccessToken    $AccessToken `
             -Ids            $allSpIds `
             -FilterProperty 'servicePrincipalId' `
-            -Endpoint       'https://graph.microsoft.com/beta/auditLogs/servicePrincipalSignIns' `
+            -Endpoint       'https://graph.microsoft.com/beta/auditLogs/signIns' `
             -Since          $since `
+            -ExtraFilter    "signInEventTypes/any(t: t eq 'servicePrincipal')" `
             -SelectFields   'servicePrincipalId,createdDateTime,servicePrincipalName,status,ipAddress,resourceDisplayName,resourceId'
     }
 
@@ -485,6 +488,7 @@ function Invoke-BulkAuditLogQuery {
         [string]   $Endpoint,
         [string]   $Since,
         [string]   $SelectFields,
+        [string]   $ExtraFilter = '',
         [int]      $BatchSize = 15
     )
 
@@ -497,7 +501,8 @@ function Invoke-BulkAuditLogQuery {
         $batchNum = [math]::Floor($i / $BatchSize) + 1
         $orParts  = $batch | ForEach-Object { "$FilterProperty eq '$_'" }
         $filter   = "($($orParts -join ' or ')) and createdDateTime ge $Since"
-        $uri      = "${Endpoint}?`$filter=$([Uri]::EscapeDataString($filter))&`$select=$SelectFields&`$top=999"
+        if ($ExtraFilter) { $filter += " and $ExtraFilter" }
+        $uri      = "${Endpoint}?`$filter=$([Uri]::EscapeDataString($filter))&`$select=$SelectFields&`$top=999&`$count=true"
 
         $records = Invoke-GraphRequestSafe -AccessToken $AccessToken -Uri $uri `
             -Context "bulk $FilterProperty batch $batchNum ($($batch.Count) ids @ $Endpoint)"
