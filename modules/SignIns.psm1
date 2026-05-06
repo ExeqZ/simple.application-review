@@ -308,10 +308,9 @@ function Get-BulkSignInActivity {
     }
 
     # ── Graph audit log mode (bulk-batched) ──────────────────────────────────────
-    # Instead of N×3 individual API calls, issue ceil(N/15)×3 batched requests
-    # using OData 'or' filters covering up to 15 apps per request.
+    # Query sign-ins per type using signInEventTypes filter on /beta/auditLogs/signIns.
+    # Each batch covers up to 15 appIds with an OR filter.
     $allAppIds  = @($ServicePrincipals | Select-Object -ExpandProperty appId)
-    $allSpIds   = @($ServicePrincipals | Select-Object -ExpandProperty id)
 
     $interactiveMap    = @{}
     $nonInteractiveMap = @{}
@@ -323,7 +322,7 @@ function Get-BulkSignInActivity {
         Write-Host ("  Querying audit logs: {0} service principals in {1} batch(es) per log type..." -f
             $allAppIds.Count, $batchCount) -ForegroundColor Gray
 
-        # Interactive user sign-ins (beta, filtered by signInEventTypes)
+        # Interactive user sign-ins
         $interactiveMap = Invoke-BulkAuditLogQuery `
             -AccessToken    $AccessToken `
             -Ids            $allAppIds `
@@ -333,7 +332,7 @@ function Get-BulkSignInActivity {
             -ExtraFilter    "signInEventTypes/any(t: t eq 'interactiveUser')" `
             -SelectFields   'appId,createdDateTime,userPrincipalName,userId,status,ipAddress,location,clientAppUsed,conditionalAccessStatus,riskLevelDuringSignIn'
 
-        # Non-interactive user sign-ins (beta, same endpoint with different type filter)
+        # Non-interactive user sign-ins
         $nonInteractiveMap = Invoke-BulkAuditLogQuery `
             -AccessToken    $AccessToken `
             -Ids            $allAppIds `
@@ -343,15 +342,15 @@ function Get-BulkSignInActivity {
             -ExtraFilter    "signInEventTypes/any(t: t eq 'nonInteractiveUser')" `
             -SelectFields   'appId,createdDateTime,userPrincipalName,userId,status,ipAddress,clientAppUsed'
 
-        # Service principal / managed identity sign-ins (beta, same endpoint)
+        # Service principal / managed identity sign-ins
         $spSignInMap = Invoke-BulkAuditLogQuery `
             -AccessToken    $AccessToken `
-            -Ids            $allSpIds `
-            -FilterProperty 'servicePrincipalId' `
+            -Ids            $allAppIds `
+            -FilterProperty 'appId' `
             -Endpoint       'https://graph.microsoft.com/beta/auditLogs/signIns' `
             -Since          $since `
             -ExtraFilter    "signInEventTypes/any(t: t eq 'servicePrincipal')" `
-            -SelectFields   'servicePrincipalId,createdDateTime,servicePrincipalName,status,ipAddress,resourceDisplayName,resourceId'
+            -SelectFields   'appId,createdDateTime,servicePrincipalName,status,ipAddress,resourceDisplayName,resourceId'
     }
 
     # ── Aggregate per SP from the bulk lookup maps ─────────────────────────────
@@ -383,7 +382,7 @@ function Get-BulkSignInActivity {
         else {
             $interactiveLogs    = @($interactiveMap[$sp.appId])
             $nonInteractiveLogs = @($nonInteractiveMap[$sp.appId])
-            $spSignInLogs       = @($spSignInMap[$sp.id])
+            $spSignInLogs       = @($spSignInMap[$sp.appId])
             $auditLogsAvailable = $true
         }
 
@@ -502,7 +501,7 @@ function Invoke-BulkAuditLogQuery {
         $orParts  = $batch | ForEach-Object { "$FilterProperty eq '$_'" }
         $filter   = "($($orParts -join ' or ')) and createdDateTime ge $Since"
         if ($ExtraFilter) { $filter += " and $ExtraFilter" }
-        $uri      = "${Endpoint}?`$filter=$([Uri]::EscapeDataString($filter))&`$select=$SelectFields&`$top=999&`$count=true"
+        $uri      = "${Endpoint}?`$filter=$([Uri]::EscapeDataString($filter))&`$select=$SelectFields&`$top=999"
 
         $records = Invoke-GraphRequestSafe -AccessToken $AccessToken -Uri $uri `
             -Context "bulk $FilterProperty batch $batchNum ($($batch.Count) ids @ $Endpoint)"
