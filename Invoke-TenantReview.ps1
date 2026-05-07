@@ -133,7 +133,7 @@ Import-Module (Join-Path $moduleRoot 'Reporting.psm1')      -Force
 Write-Host "`n=== Application Review — Tenant: $TenantId ===" -ForegroundColor Cyan
 
 # ── Authenticate ──────────────────────────────────────────────────────────────
-Write-Host "`n[1/5] Authenticating..." -ForegroundColor Yellow
+Write-Host "`n[1/6] Authenticating..." -ForegroundColor Yellow
 
 $tokenParams = @{ TenantId = $TenantId; ClientId = $ClientId }
 
@@ -182,7 +182,7 @@ catch {
 Write-Host "  Tenant: $tenantName ($tenantGuid)"
 
 # ── Enumerate applications ────────────────────────────────────────────────────
-Write-Host "`n[2/5] Enumerating applications..." -ForegroundColor Yellow
+Write-Host "`n[2/6] Enumerating applications..." -ForegroundColor Yellow
 Clear-ServicePrincipalCache
 
 $appParams = @{
@@ -195,7 +195,7 @@ $servicePrincipals = Get-AllApplications @appParams
 Write-Host "  Found $($servicePrincipals.Count) service principals to review." -ForegroundColor Green
 
 # ── Analyse permissions ───────────────────────────────────────────────────────
-Write-Host "`n[3/5] Analysing permissions..." -ForegroundColor Yellow
+Write-Host "`n[3/6] Analysing permissions..." -ForegroundColor Yellow
 
 $permissionResults = [System.Collections.Generic.List[object]]::new()
 $total             = $servicePrincipals.Count
@@ -220,7 +220,7 @@ Write-Progress -Activity 'Analysing permissions' -Completed
 Write-Host "  Permissions analysed." -ForegroundColor Green
 
 # ── Sign-in activity ──────────────────────────────────────────────────────────
-Write-Host "`n[4/5] Retrieving sign-in activity..." -ForegroundColor Yellow
+Write-Host "`n[4/6] Retrieving sign-in activity..." -ForegroundColor Yellow
 
 $signInParams = @{
     AccessToken             = $accessToken
@@ -290,8 +290,15 @@ $signInResults = Get-BulkSignInActivity @signInParams
 
 Write-Host "  Sign-in activity retrieved." -ForegroundColor Green
 
+# ── SCIM / Provisioning detection ─────────────────────────────────────────────
+Write-Host "`n[5/6] Detecting SCIM provisioning..." -ForegroundColor Yellow
+
+$scimStatus = Get-BulkScimStatus -AccessToken $accessToken -ServicePrincipals $servicePrincipals
+$scimCount  = @($scimStatus.Values | Where-Object { $_ }).Count
+Write-Host "  Found $scimCount app(s) with SCIM provisioning configured." -ForegroundColor Green
+
 # ── Combine & report ──────────────────────────────────────────────────────────
-Write-Host "`n[5/5] Generating reports..." -ForegroundColor Yellow
+Write-Host "`n[6/6] Generating reports..." -ForegroundColor Yellow
 
 $signInLookup = @{}
 foreach ($sia in $signInResults) { $signInLookup[$sia.ServicePrincipalId] = $sia }
@@ -311,11 +318,13 @@ $combinedResults = foreach ($pr in $permissionResults) {
             DistinctSpCallers = @(); DistinctSpCallerCount = 0; AuditLogsQueried = $false
         }
     }
+    $isScim = if ($scimStatus.ContainsKey($pr.ServicePrincipal.id)) { $scimStatus[$pr.ServicePrincipal.id] } else { $false }
     Build-CombinedResult `
         -ServicePrincipal  $pr.ServicePrincipal `
         -PermissionData    $pr.PermissionData `
         -PermissionSummary $pr.PermissionSummary `
-        -SignInActivity     $sia
+        -SignInActivity     $sia `
+        -IsScimApp          $isScim
 }
 
 $reportResult = Export-ReviewReport `
@@ -326,16 +335,21 @@ $reportResult = Export-ReviewReport `
     -IncludeRawJson:$IncludeRawJson
 
 # ── Summary ───────────────────────────────────────────────────────────────────
-$critCount  = @($combinedResults | Where-Object { $_.OverallRiskLevel -eq 'Critical' }).Count
 $highCount  = @($combinedResults | Where-Object { $_.OverallRiskLevel -eq 'High'     }).Count
+$medCount   = @($combinedResults | Where-Object { $_.OverallRiskLevel -eq 'Medium'   }).Count
 $inactCount = @($combinedResults | Where-Object { $_.IsInactive                      }).Count
+$unusedCount = @($combinedResults | Where-Object { $_.IsLikelyUnused                 }).Count
+$overpCount = @($combinedResults | Where-Object { $_.IsOverprivileged               }).Count
 
 Write-Host "`n=== Summary ===" -ForegroundColor Cyan
-Write-Host "  Total reviewed : $($combinedResults.Count)"
-Write-Host "  Critical risk  : $critCount"  -ForegroundColor $(if ($critCount -gt 0) { 'Red'    } else { 'Green' })
-Write-Host "  High risk      : $highCount"  -ForegroundColor $(if ($highCount  -gt 0) { 'Yellow' } else { 'Green' })
-Write-Host "  Inactive apps  : $inactCount" -ForegroundColor $(if ($inactCount -gt 0) { 'DarkGray' } else { 'Green' })
-Write-Host "  Report folder  : $($reportResult.ReportFolder)" -ForegroundColor Cyan
+Write-Host "  Total reviewed    : $($combinedResults.Count)"
+Write-Host "  High risk         : $highCount"   -ForegroundColor $(if ($highCount  -gt 0) { 'Red'    } else { 'Green' })
+Write-Host "  Medium risk       : $medCount"    -ForegroundColor $(if ($medCount   -gt 0) { 'Yellow' } else { 'Green' })
+Write-Host "  Inactive apps     : $inactCount"  -ForegroundColor $(if ($inactCount -gt 0) { 'DarkGray' } else { 'Green' })
+Write-Host "  Likely unused     : $unusedCount" -ForegroundColor $(if ($unusedCount -gt 0) { 'DarkYellow' } else { 'Green' })
+Write-Host "  Overprivileged    : $overpCount"  -ForegroundColor $(if ($overpCount -gt 0) { 'Red' } else { 'Green' })
+Write-Host "  SCIM provisioning : $scimCount"
+Write-Host "  Report folder     : $($reportResult.ReportFolder)" -ForegroundColor Cyan
 Write-Host ""
 
 return $combinedResults

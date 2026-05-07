@@ -1,6 +1,6 @@
 {
-  "_defenderRiskLevelNote": "defenderRiskLevel reflects the Microsoft Defender for Cloud Apps (MDCA) OAuth app permission severity classification: High / Medium / Low. riskLevel is the internal assessment factoring in abuse potential and blast radius.",
-  "_defenderRiskLevelSource": "https://learn.microsoft.com/en-us/defender-cloud-apps/manage-app-permissions",
+  "_riskLevelNote": "defenderRiskLevel reflects the Microsoft Defender for Cloud Apps — App Governance permission severity classification: High / Medium / Low. This is the primary risk indicator used throughout reports.",
+  "_riskLevelSource": "https://learn.microsoft.com/en-us/defender-cloud-apps/app-governance-manage-app-governance",
   "sensitivePermissions": [
 
     // ── Critical internal risk / Defender: High ─────────────────────────────

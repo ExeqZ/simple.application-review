@@ -131,19 +131,20 @@ function Build-MultiTenantSummaryHtml {
     $generated = Get-Date -Format 'yyyy-MM-dd HH:mm UTC'
     $rows = ($Summaries | ForEach-Object {
         $statusColor = if ($_.Status -eq 'Success') { '#166534' } else { '#991b1b' }
-        $critCls = if ($_.CriticalRisk -gt 0) { 'color:#b91c1c;font-weight:700' } else { '' }
-        $highCls = if ($_.HighRisk    -gt 0) { 'color:#c2410c;font-weight:600' } else { '' }
+        $highCls = if ($_.HighRisk    -gt 0) { 'color:#b91c1c;font-weight:700' } else { '' }
+        $medCls  = if ($_.MediumRisk  -gt 0) { 'color:#b45309;font-weight:600' } else { '' }
         $tenantNameHtml = [System.Net.WebUtility]::HtmlEncode($_.TenantName)
         @"
 <tr>
   <td><strong>$tenantNameHtml</strong><br><span style='font-size:0.68rem;color:#9ca3af'>$($_.TenantId)</span></td>
   <td style='text-align:center'>$($_.TotalApps)</td>
-  <td style='text-align:center;$critCls'>$($_.CriticalRisk)</td>
   <td style='text-align:center;$highCls'>$($_.HighRisk)</td>
-  <td style='text-align:center'>$($_.MediumRisk)</td>
-  <td style='text-align:center;$(if($_.DefenderHighRisk -gt 0){"color:#991b1b;font-weight:700"})'>$($_.DefenderHighRisk)</td>
-  <td style='text-align:center;$(if($_.DefenderMediumRisk -gt 0){"color:#92400e"})'>$($_.DefenderMediumRisk)</td>
+  <td style='text-align:center;$medCls'>$($_.MediumRisk)</td>
+  <td style='text-align:center'>$($_.LowRisk)</td>
+  <td style='text-align:center;$(if($_.LikelyUnused -gt 0){"color:#7c2d12;font-weight:700"})'>$($_.LikelyUnused)</td>
+  <td style='text-align:center;$(if($_.Overprivileged -gt 0){"color:#991b1b;font-weight:700"})'>$($_.Overprivileged)</td>
   <td style='text-align:center;$(if($_.InactiveApps -gt 0){"color:#6b7280"})'>$($_.InactiveApps)</td>
+  <td style='text-align:center'>$($_.ScimApps)</td>
   <td>$($_.ProcessedAt)</td>
   <td style='color:$statusColor;font-weight:600'>$($_.Status)</td>
 </tr>
@@ -169,8 +170,8 @@ tr:hover td{background:#f8fafc}
 <div class="wrap">
 <table>
 <thead><tr>
-  <th>Tenant</th><th>Apps</th><th>Critical</th><th>High</th><th>Medium</th>
-  <th>Def: High</th><th>Def: Medium</th><th>Inactive</th><th>Run At</th><th>Status</th>
+  <th>Tenant</th><th>Apps</th><th>High</th><th>Medium</th><th>Low</th>
+  <th>Likely Unused</th><th>Overprivileged</th><th>Inactive</th><th>SCIM</th><th>Run At</th><th>Status</th>
 </tr></thead>
 <tbody>$rows</tbody>
 </table>
@@ -301,6 +302,9 @@ foreach ($tenant in $tenants) {
 
         $signInResults = Get-BulkSignInActivity @signInParams
 
+        # ── SCIM detection ────────────────────────────────────────────────────
+        $scimStatus = Get-BulkScimStatus -AccessToken $accessToken -ServicePrincipals $servicePrincipals
+
         # ── Combine ───────────────────────────────────────────────────────────
         $signInLookup = @{}
         foreach ($sia in $signInResults) { $signInLookup[$sia.ServicePrincipalId] = $sia }
@@ -319,11 +323,13 @@ foreach ($tenant in $tenants) {
                     DistinctSpCallers = @(); DistinctSpCallerCount = 0; AuditLogsQueried = $false
                 }
             }
+            $isScim = if ($scimStatus.ContainsKey($pr.ServicePrincipal.id)) { $scimStatus[$pr.ServicePrincipal.id] } else { $false }
             Build-CombinedResult `
                 -ServicePrincipal  $pr.ServicePrincipal `
                 -PermissionData    $pr.PermissionData `
                 -PermissionSummary $pr.PermissionSummary `
-                -SignInActivity     $sia
+                -SignInActivity     $sia `
+                -IsScimApp          $isScim
         }
 
         # ── Report ────────────────────────────────────────────────────────────
@@ -341,12 +347,13 @@ foreach ($tenant in $tenants) {
             TenantName             = $tenantName
             TenantId               = $tenantGuid
             TotalApps              = @($combined).Count
-            CriticalRisk           = @($combined | Where-Object { $_.OverallRiskLevel -eq 'Critical' }).Count
             HighRisk               = @($combined | Where-Object { $_.OverallRiskLevel -eq 'High'     }).Count
             MediumRisk             = @($combined | Where-Object { $_.OverallRiskLevel -eq 'Medium'   }).Count
-            DefenderHighRisk       = @($combined | Where-Object { $_.OverallDefenderRiskLevel -eq 'High'   }).Count
-            DefenderMediumRisk     = @($combined | Where-Object { $_.OverallDefenderRiskLevel -eq 'Medium' }).Count
+            LowRisk                = @($combined | Where-Object { $_.OverallRiskLevel -eq 'Low'      }).Count
             InactiveApps           = @($combined | Where-Object { $_.IsInactive }).Count
+            LikelyUnused           = @($combined | Where-Object { $_.IsLikelyUnused }).Count
+            Overprivileged         = @($combined | Where-Object { $_.IsOverprivileged }).Count
+            ScimApps               = @($combined | Where-Object { $_.IsScimApp }).Count
             ProcessedAt            = (Get-Date -Format 'yyyy-MM-dd HH:mm')
             ElapsedSeconds         = $elapsedSec
             Status                 = 'Success'
@@ -360,8 +367,8 @@ foreach ($tenant in $tenants) {
         $allTenantSummaries.Add([PSCustomObject]@{
             TenantName = $tenant.tenantName; TenantId = $tenant.tenantId
             Status = 'Failed'; ErrorMessage = $_.ToString()
-            TotalApps = 0; CriticalRisk = 0; HighRisk = 0; MediumRisk = 0
-            DefenderHighRisk = 0; DefenderMediumRisk = 0; InactiveApps = 0
+            TotalApps = 0; HighRisk = 0; MediumRisk = 0; LowRisk = 0
+            InactiveApps = 0; LikelyUnused = 0; Overprivileged = 0; ScimApps = 0
             ProcessedAt = (Get-Date -Format 'yyyy-MM-dd HH:mm'); ElapsedSeconds = 0
             ReportFolder = ''
         })
@@ -385,8 +392,8 @@ if ($allTenantSummaries.Count -gt 0) {
     $summaryHtml | Set-Content -Path $summaryHtmlPath -Encoding UTF8
 
     Write-Host "`n=== Multi-Tenant Summary ===" -ForegroundColor Cyan
-    $allTenantSummaries | Format-Table TenantName, TotalApps, CriticalRisk, HighRisk,
-        DefenderHighRisk, InactiveApps, Status -AutoSize
+    $allTenantSummaries | Format-Table TenantName, TotalApps, HighRisk, MediumRisk,
+        LikelyUnused, Overprivileged, InactiveApps, Status -AutoSize
     Write-Host "  Aggregate CSV : $summaryCsv"
     Write-Host "  Aggregate HTML: $summaryHtmlPath"
 }

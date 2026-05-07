@@ -5,7 +5,8 @@
 .DESCRIPTION
     Retrieves app role assignments (application permissions) and OAuth2 permission grants
     (delegated permissions) for a service principal, then cross-references them against
-    the sensitive permissions list to produce a risk assessment.
+    the sensitive permissions list to produce a risk assessment based on the Microsoft
+    Defender for Cloud Apps — App Governance classification (High / Medium / Low).
 #>
 
 # Loaded once per session; path resolved relative to this module file
@@ -114,7 +115,6 @@ function Get-AppRoleAssignments {
             GrantedOn         = $assignment.createdDateTime
             IsSensitive       = $sensitiveMatch.IsSensitive
             RiskLevel         = $sensitiveMatch.RiskLevel
-            DefenderRiskLevel = $sensitiveMatch.DefenderRiskLevel
             RiskDescription   = $sensitiveMatch.RiskDescription
             RiskCategory      = $sensitiveMatch.Category
         }
@@ -174,7 +174,6 @@ function Get-DelegatedPermissions {
                 GrantedOn         = $null
                 IsSensitive       = $sensitiveMatch.IsSensitive
                 RiskLevel         = $sensitiveMatch.RiskLevel
-                DefenderRiskLevel = $sensitiveMatch.DefenderRiskLevel
                 RiskDescription   = $sensitiveMatch.RiskDescription
                 RiskCategory      = $sensitiveMatch.Category
             }
@@ -207,10 +206,9 @@ function Test-SensitivePermission {
     if ($match) {
         return [PSCustomObject]@{
             IsSensitive        = $true
-            RiskLevel          = $match.riskLevel
+            RiskLevel          = $match.defenderRiskLevel ?? 'Unknown'
             RiskDescription    = $match.description
             Category           = $match.category
-            DefenderRiskLevel  = $match.defenderRiskLevel ?? 'Unknown'
         }
     }
 
@@ -219,14 +217,13 @@ function Test-SensitivePermission {
         RiskLevel          = 'None'
         RiskDescription    = ''
         Category           = ''
-        DefenderRiskLevel  = 'Unknown'
     }
 }
 
 function Get-OverallRiskLevel {
     <#
     .SYNOPSIS
-        Derives the highest risk level from a collection of permissions.
+        Derives the highest App Governance risk level from a collection of permissions.
 
     .PARAMETER Permissions
         Array of permission objects as returned by Get-AppRoleAssignments / Get-DelegatedPermissions.
@@ -241,11 +238,10 @@ function Get-OverallRiskLevel {
     )
 
     $rankMap = @{
-        'Critical' = 4
-        'High'     = 3
-        'Medium'   = 2
-        'Low'      = 1
-        'None'     = 0
+        'High'    = 3
+        'Medium'  = 2
+        'Low'     = 1
+        'None'    = 0
     }
 
     $maxRank = 0
@@ -276,29 +272,47 @@ function Get-PermissionSummary {
 
     $overallRisk = Get-OverallRiskLevel -Permissions ($allPerms.Count -gt 0 ? $allPerms : @([PSCustomObject]@{ RiskLevel = 'None' }))
 
-    # Defender-level summary (High/Medium/Low — the three MDCA levels)
-    $defenderHigh   = @($sensitivePerms | Where-Object { $_.DefenderRiskLevel -eq 'High'   } | Select-Object -ExpandProperty PermissionName)
-    $defenderMedium = @($sensitivePerms | Where-Object { $_.DefenderRiskLevel -eq 'Medium' } | Select-Object -ExpandProperty PermissionName)
-    $defenderLow    = @($sensitivePerms | Where-Object { $_.DefenderRiskLevel -eq 'Low'    } | Select-Object -ExpandProperty PermissionName)
+    # App Governance risk level summary (High/Medium/Low)
+    $riskHigh   = @($sensitivePerms | Where-Object { $_.RiskLevel -eq 'High'   } | Select-Object -ExpandProperty PermissionName)
+    $riskMedium = @($sensitivePerms | Where-Object { $_.RiskLevel -eq 'Medium' } | Select-Object -ExpandProperty PermissionName)
+    $riskLow    = @($sensitivePerms | Where-Object { $_.RiskLevel -eq 'Low'    } | Select-Object -ExpandProperty PermissionName)
 
-    # Highest Defender risk level present
-    $overallDefenderRisk = if ($defenderHigh.Count   -gt 0) { 'High'   }
-                           elseif ($defenderMedium.Count -gt 0) { 'Medium' }
-                           elseif ($defenderLow.Count    -gt 0) { 'Low'    }
-                           else                                  { 'None'   }
+    # Numeric risk score: High=3, Medium=2, Low=1, None=0
+    $riskScoreMap = @{ 'High' = 3; 'Medium' = 2; 'Low' = 1; 'None' = 0 }
+    $riskScore = $riskScoreMap[$overallRisk] ?? 0
+
+    # Highly privileged: has any High risk permissions
+    $isHighlyPrivileged = $riskHigh.Count -gt 0
+
+    # Consent analysis: admin-consented (AllPrincipals) vs user-consented (Principal)
+    $delegatedPerms = @($PermissionData.DelegatedPermissions)
+    $adminConsented = @($delegatedPerms | Where-Object { $_.ConsentType -eq 'AllPrincipals' })
+    $userConsented  = @($delegatedPerms | Where-Object { $_.ConsentType -eq 'Principal' })
+    $userConsentedPrincipalIds = @($userConsented | Select-Object -ExpandProperty PrincipalId -Unique)
+
+    $consentType = if ($adminConsented.Count -gt 0 -and $userConsented.Count -gt 0) { 'Both' }
+                   elseif ($adminConsented.Count -gt 0) { 'Admin' }
+                   elseif ($userConsented.Count -gt 0)  { 'User'  }
+                   else                                  { 'None'  }
+
+    # All permissions (not just sensitive) for full listing
+    $allPermissionNames = @($allPerms | Select-Object PermissionName, RiskLevel, PermissionType,
+        @{N='ConsentType';E={ $_.ConsentType ?? 'N/A' }})
 
     return [PSCustomObject]@{
         TotalPermissions              = $allPerms.Count
         SensitivePermissionCount      = $sensitivePerms.Count
         OverallRiskLevel              = $overallRisk
-        OverallDefenderRiskLevel      = $overallDefenderRisk
-        CriticalPermissions           = @($sensitivePerms | Where-Object { $_.RiskLevel -eq 'Critical' } | Select-Object -ExpandProperty PermissionName)
-        HighPermissions               = @($sensitivePerms | Where-Object { $_.RiskLevel -eq 'High'     } | Select-Object -ExpandProperty PermissionName)
-        MediumPermissions             = @($sensitivePerms | Where-Object { $_.RiskLevel -eq 'Medium'   } | Select-Object -ExpandProperty PermissionName)
-        DefenderHighPermissions       = $defenderHigh
-        DefenderMediumPermissions     = $defenderMedium
-        DefenderLowPermissions        = $defenderLow
-        AllSensitivePermissions       = @($sensitivePerms | Select-Object PermissionName, RiskLevel, DefenderRiskLevel, PermissionType)
+        RiskScore                     = $riskScore
+        IsHighlyPrivileged            = $isHighlyPrivileged
+        HighPermissions               = $riskHigh
+        MediumPermissions             = $riskMedium
+        LowPermissions                = $riskLow
+        AllPermissions                = $allPermissionNames
+        AllSensitivePermissions       = @($sensitivePerms | Select-Object PermissionName, RiskLevel, PermissionType)
+        ConsentType                   = $consentType
+        UserConsentedCount            = $userConsentedPrincipalIds.Count
+        AdminConsented                = ($adminConsented.Count -gt 0)
     }
 }
 

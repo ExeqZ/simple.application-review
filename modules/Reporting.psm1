@@ -5,9 +5,9 @@
 .DESCRIPTION
     Takes the combined result set (service principals + permissions + sign-in activity)
     and produces three report formats per tenant run.
-    The HTML report is self-contained (no external CDN dependencies) and colour-codes
-    risk levels matching both the internal severity (Critical/High/Medium/Low) and
-    the Microsoft Defender for Cloud Apps classification (High/Medium/Low).
+    The HTML report is self-contained (no external CDN dependencies), sortable, and
+    filterable. Risk levels follow the Microsoft Defender for Cloud Apps — App Governance
+    classification (High / Medium / Low).
 #>
 
 function Export-ReviewReport {
@@ -90,7 +90,7 @@ function Export-ReviewReport {
 function Build-CombinedResult {
     <#
     .SYNOPSIS
-        Merges service principal, permission, and sign-in activity data into a single object.
+        Merges service principal, permission, sign-in activity, and SCIM data into a single object.
 
     .PARAMETER ServicePrincipal
         Service principal object from Get-AllApplications.
@@ -104,6 +104,9 @@ function Build-CombinedResult {
     .PARAMETER SignInActivity
         Output of Get-ApplicationSignInActivity.
 
+    .PARAMETER IsScimApp
+        Whether this app uses SCIM provisioning.
+
     .EXAMPLE
         $row = Build-CombinedResult -ServicePrincipal $sp -PermissionData $perms -PermissionSummary $summary -SignInActivity $sia
     #>
@@ -112,7 +115,30 @@ function Build-CombinedResult {
         [Parameter(Mandatory)] [object]$ServicePrincipal,
         [Parameter(Mandatory)] [object]$PermissionData,
         [Parameter(Mandatory)] [object]$PermissionSummary,
-        [Parameter(Mandatory)] [object]$SignInActivity
+        [Parameter(Mandatory)] [object]$SignInActivity,
+        [bool]$IsScimApp = $false
+    )
+
+    # Determine if app is likely unused and candidate for deletion:
+    # Inactive + no sign-ins in window + created > 90 days ago
+    $createdDate = $null
+    if ($ServicePrincipal.createdDateTime) {
+        try { $createdDate = [datetime]::Parse($ServicePrincipal.createdDateTime) } catch {}
+    }
+    $daysSinceCreated = if ($createdDate) {
+        [int]((Get-Date).ToUniversalTime() - $createdDate).TotalDays
+    } else { 999 }
+
+    $isLikelyUnused = (
+        $SignInActivity.IsInactive -and
+        $SignInActivity.TotalSignInsInWindow -eq 0 -and
+        $daysSinceCreated -gt 90
+    )
+
+    # Determine overprivileged: has high-risk permissions but very low/no usage
+    $isOverprivileged = (
+        $PermissionSummary.IsHighlyPrivileged -and
+        $SignInActivity.TotalSignInsInWindow -le 5
     )
 
     return [PSCustomObject]@{
@@ -126,17 +152,27 @@ function Build-CombinedResult {
         PublisherTenantId             = $ServicePrincipal.appOwnerOrganizationId
         AzureResourceId               = $ServicePrincipal.azureResourceId
 
-        # Risk
+        # Risk (App Governance levels: High/Medium/Low/None)
         OverallRiskLevel              = $PermissionSummary.OverallRiskLevel
-        OverallDefenderRiskLevel      = $PermissionSummary.OverallDefenderRiskLevel
+        RiskScore                     = $PermissionSummary.RiskScore
+        IsHighlyPrivileged            = $PermissionSummary.IsHighlyPrivileged
+        IsOverprivileged              = $isOverprivileged
         TotalPermissions              = $PermissionSummary.TotalPermissions
         SensitivePermissionCount      = $PermissionSummary.SensitivePermissionCount
-        CriticalPermissions           = ($PermissionSummary.CriticalPermissions -join '; ')
         HighPermissions               = ($PermissionSummary.HighPermissions -join '; ')
         MediumPermissions             = ($PermissionSummary.MediumPermissions -join '; ')
-        DefenderHighPermissions       = ($PermissionSummary.DefenderHighPermissions -join '; ')
-        DefenderMediumPermissions     = ($PermissionSummary.DefenderMediumPermissions -join '; ')
-        DefenderLowPermissions        = ($PermissionSummary.DefenderLowPermissions -join '; ')
+        LowPermissions                = ($PermissionSummary.LowPermissions -join '; ')
+
+        # Consent
+        ConsentType                   = $PermissionSummary.ConsentType
+        UserConsentedCount            = $PermissionSummary.UserConsentedCount
+        AdminConsented                = $PermissionSummary.AdminConsented
+
+        # SCIM
+        IsScimApp                     = $IsScimApp
+
+        # Likely unused / deletion candidate
+        IsLikelyUnused                = $isLikelyUnused
 
         # Activity
         LastSeenOverall               = $SignInActivity.LastSeenOverall
@@ -159,6 +195,7 @@ function Build-CombinedResult {
         # Full permission detail for JSON/HTML drill-down
         _appPermissions               = $PermissionData.ApplicationPermissions
         _delegatedPermissions         = $PermissionData.DelegatedPermissions
+        _allPermissions               = $PermissionSummary.AllPermissions
     }
 }
 
@@ -177,15 +214,20 @@ function ConvertTo-FlatCsvRow {
         PublisherTenantId             = $Row.PublisherTenantId
         AzureResourceId               = $Row.AzureResourceId
         OverallRiskLevel              = $Row.OverallRiskLevel
-        OverallDefenderRiskLevel      = $Row.OverallDefenderRiskLevel
+        RiskScore                     = $Row.RiskScore
+        IsHighlyPrivileged            = $Row.IsHighlyPrivileged
+        IsOverprivileged              = $Row.IsOverprivileged
         TotalPermissions              = $Row.TotalPermissions
         SensitivePermissionCount      = $Row.SensitivePermissionCount
-        CriticalPermissions           = $Row.CriticalPermissions
         HighPermissions               = $Row.HighPermissions
         MediumPermissions             = $Row.MediumPermissions
-        DefenderHighPermissions       = $Row.DefenderHighPermissions
-        DefenderMediumPermissions     = $Row.DefenderMediumPermissions
-        DefenderLowPermissions        = $Row.DefenderLowPermissions
+        LowPermissions                = $Row.LowPermissions
+        AllPermissions                = if ($Row._allPermissions) { ($Row._allPermissions | ForEach-Object { "$($_.PermissionName) [$($_.PermissionType)]" }) -join '; ' } else { '' }
+        ConsentType                   = $Row.ConsentType
+        UserConsentedCount            = $Row.UserConsentedCount
+        AdminConsented                = $Row.AdminConsented
+        IsScimApp                     = $Row.IsScimApp
+        IsLikelyUnused                = $Row.IsLikelyUnused
         LastSeenOverall               = if ($Row.LastSeenOverall) { $Row.LastSeenOverall.ToString('o') } else { '' }
         DaysSinceLastSignIn           = $Row.DaysSinceLastSignIn
         IsInactive                    = $Row.IsInactive
@@ -201,6 +243,7 @@ function ConvertTo-FlatCsvRow {
         DistinctInteractiveUserCount  = $Row.DistinctInteractiveUserCount
         DistinctInteractiveUsers      = if ($Row.DistinctInteractiveUsers) { $Row.DistinctInteractiveUsers } else { '' }
         DistinctSpCallerCount         = $Row.DistinctSpCallerCount
+        EntraPortalLink               = "https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ManagedAppMenuBlade/~/Overview/objectId/$($Row.ObjectId)/appId/$($Row.AppId)"
     }
 }
 
@@ -216,16 +259,16 @@ function Build-HtmlReport {
     $generated = Get-Date -Format 'yyyy-MM-dd HH:mm UTC'
     $totalApps = $Results.Count
     $inactive  = @($Results | Where-Object { $_.IsInactive }).Count
-    $critical  = @($Results | Where-Object { $_.OverallRiskLevel -eq 'Critical' }).Count
     $high      = @($Results | Where-Object { $_.OverallRiskLevel -eq 'High'     }).Count
     $medium    = @($Results | Where-Object { $_.OverallRiskLevel -eq 'Medium'   }).Count
+    $low       = @($Results | Where-Object { $_.OverallRiskLevel -eq 'Low'      }).Count
+    $scimApps  = @($Results | Where-Object { $_.IsScimApp }).Count
+    $likelyUnused = @($Results | Where-Object { $_.IsLikelyUnused }).Count
+    $overpriv  = @($Results | Where-Object { $_.IsOverprivileged }).Count
+    $highlyPriv = @($Results | Where-Object { $_.IsHighlyPrivileged }).Count
 
-    $defHigh   = @($Results | Where-Object { $_.OverallDefenderRiskLevel -eq 'High'   }).Count
-    $defMedium = @($Results | Where-Object { $_.OverallDefenderRiskLevel -eq 'Medium' }).Count
-    $defLow    = @($Results | Where-Object { $_.OverallDefenderRiskLevel -eq 'Low'    }).Count
-
-    $tableRows = ($Results | Sort-Object OverallRiskLevel, DisplayName | ForEach-Object {
-        Build-HtmlTableRow $_
+    $tableRows = ($Results | Sort-Object { @{'High'=0;'Medium'=1;'Low'=2;'None'=3}[$_.OverallRiskLevel] }, DisplayName | ForEach-Object {
+        Build-HtmlTableRow $_ $TenantId
     }) -join "`n"
 
     return @"
@@ -237,12 +280,12 @@ function Build-HtmlReport {
 <title>Application Review — $([System.Net.WebUtility]::HtmlEncode($TenantName))</title>
 <style>
   :root {
-    --clr-critical: #b91c1c; --clr-critical-bg: #fef2f2;
-    --clr-high:     #c2410c; --clr-high-bg:     #fff7ed;
+    --clr-high:     #b91c1c; --clr-high-bg:     #fef2f2;
     --clr-medium:   #b45309; --clr-medium-bg:   #fffbeb;
     --clr-low:      #166534; --clr-low-bg:       #f0fdf4;
     --clr-none:     #374151; --clr-none-bg:      #f9fafb;
     --clr-inactive: #6b7280;
+    --clr-unused:   #7c2d12;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -255,10 +298,11 @@ function Build-HtmlReport {
           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
   .card .num { font-size: 2rem; font-weight: 700; line-height: 1; }
   .card .lbl { font-size: 0.72rem; color: #6b7280; margin-top: 4px; }
-  .card.critical .num { color: var(--clr-critical); }
   .card.high     .num { color: var(--clr-high);     }
   .card.medium   .num { color: var(--clr-medium);   }
+  .card.low      .num { color: var(--clr-low);      }
   .card.inactive .num { color: var(--clr-inactive); }
+  .card.unused   .num { color: var(--clr-unused);   }
   .section-title { padding: 0 32px 8px; font-size: 0.75rem; font-weight: 600;
                    color: #6b7280; text-transform: uppercase; letter-spacing: .05em; }
   .table-wrap { overflow-x: auto; padding: 0 32px 32px; }
@@ -267,36 +311,46 @@ function Build-HtmlReport {
           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
   th { background: #1e3a5f; color: #fff; padding: 10px 12px;
        text-align: left; font-size: 0.72rem; font-weight: 600;
-       text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+       text-transform: uppercase; letter-spacing: .04em; white-space: nowrap;
+       cursor: pointer; user-select: none; position: relative; }
+  th:hover { background: #2a4d78; }
+  th .sort-icon { margin-left: 4px; font-size: 0.65rem; opacity: 0.5; }
+  th.sorted-asc .sort-icon::after  { content: ' \25B2'; opacity: 1; }
+  th.sorted-desc .sort-icon::after { content: ' \25BC'; opacity: 1; }
   td { padding: 9px 12px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
   tr:last-child td { border-bottom: none; }
   tr:hover td { background: #f8fafc; }
+  tr.row-unused { background: #fef3c7; }
+  tr.row-unused:hover td { background: #fde68a; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 9999px;
            font-size: 0.68rem; font-weight: 600; white-space: nowrap; }
-  .badge-critical { color: var(--clr-critical); background: var(--clr-critical-bg); }
   .badge-high     { color: var(--clr-high);     background: var(--clr-high-bg);     }
   .badge-medium   { color: var(--clr-medium);   background: var(--clr-medium-bg);   }
   .badge-low      { color: var(--clr-low);       background: var(--clr-low-bg);      }
   .badge-none     { color: var(--clr-none);     background: var(--clr-none-bg);     }
+  .badge-scim     { color: #1e40af; background: #dbeafe; }
+  .badge-unused   { color: #7c2d12; background: #ffedd5; }
+  .badge-overpriv { color: #991b1b; background: #fee2e2; }
+  .badge-highlyprivileged { color: #9a3412; background: #fff7ed; }
+  .badge-consent-admin { color: #065f46; background: #d1fae5; }
+  .badge-consent-user  { color: #92400e; background: #fef3c7; }
   .inactive-label { color: var(--clr-inactive); font-style: italic; }
   .perms-list { font-size: 0.7rem; color: #374151; }
-  .perm-critical { color: var(--clr-critical); font-weight: 600; }
-  .perm-high     { color: var(--clr-high);     }
+  .perm-high     { color: var(--clr-high); font-weight: 600; }
   .perm-medium   { color: var(--clr-medium);   }
   .perm-low      { color: var(--clr-low);      }
-  .def-badge { display: inline-block; padding: 1px 6px; border-radius: 4px;
-               font-size: 0.65rem; font-weight: 600; margin-left: 4px; }
-  .def-high   { background: #fee2e2; color: #991b1b; }
-  .def-medium { background: #fef3c7; color: #92400e; }
-  .def-low    { background: #d1fae5; color: #065f46; }
+  .perm-none     { color: #6b7280; }
   .days-num { font-weight: 600; }
   .days-inactive { color: var(--clr-inactive); }
   details summary { cursor: pointer; font-size: 0.72rem; color: #3b82f6; }
   details summary:hover { text-decoration: underline; }
-  .filter-bar { padding: 0 32px 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .filter-bar { padding: 0 32px 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .filter-btn { padding: 5px 14px; border-radius: 6px; border: 1px solid #d1d5db;
                 background: #fff; cursor: pointer; font-size: 0.75rem; color: #374151; }
   .filter-btn.active { background: #1e3a5f; color: #fff; border-color: #1e3a5f; }
+  .filter-sep { color: #d1d5db; font-size: 0.9rem; }
+  .app-link { color: #2563eb; text-decoration: none; font-size: 0.68rem; }
+  .app-link:hover { text-decoration: underline; }
   @media print { .filter-bar { display: none; } }
 </style>
 </head>
@@ -304,40 +358,56 @@ function Build-HtmlReport {
 <header>
   <h1>Enterprise Application &amp; Managed Identity Review</h1>
   <p>Tenant: $([System.Net.WebUtility]::HtmlEncode($TenantName)) &nbsp;|&nbsp; ID: $TenantId &nbsp;|&nbsp; Generated: $generated UTC</p>
+  <p style="margin-top:4px;font-size:0.75rem;opacity:0.8">Risk levels: Microsoft Defender for Cloud Apps — App Governance classification</p>
 </header>
 
 <div class="summary">
   <div class="card"><div class="num">$totalApps</div><div class="lbl">Total Applications</div></div>
-  <div class="card critical"><div class="num">$critical</div><div class="lbl">Critical Risk</div></div>
   <div class="card high"><div class="num">$high</div><div class="lbl">High Risk</div></div>
   <div class="card medium"><div class="num">$medium</div><div class="lbl">Medium Risk</div></div>
+  <div class="card low"><div class="num">$low</div><div class="lbl">Low Risk</div></div>
   <div class="card inactive"><div class="num">$inactive</div><div class="lbl">Inactive Apps</div></div>
-  <div class="card" style="border-left:4px solid #991b1b"><div class="num" style="color:#991b1b">$defHigh</div><div class="lbl">Defender: High</div></div>
-  <div class="card" style="border-left:4px solid #92400e"><div class="num" style="color:#92400e">$defMedium</div><div class="lbl">Defender: Medium</div></div>
-  <div class="card" style="border-left:4px solid #065f46"><div class="num" style="color:#065f46">$defLow</div><div class="lbl">Defender: Low</div></div>
+  <div class="card unused"><div class="num">$likelyUnused</div><div class="lbl">Likely Unused</div></div>
+  <div class="card" style="border-left:4px solid #991b1b"><div class="num" style="color:#991b1b">$overpriv</div><div class="lbl">Overprivileged</div></div>
+  <div class="card" style="border-left:4px solid #9a3412"><div class="num" style="color:#9a3412">$highlyPriv</div><div class="lbl">Highly Privileged</div></div>
+  <div class="card" style="border-left:4px solid #1e40af"><div class="num" style="color:#1e40af">$scimApps</div><div class="lbl">SCIM / Provisioning</div></div>
 </div>
 
 <div class="filter-bar">
+  <span style="font-size:0.72rem;font-weight:600;color:#6b7280;margin-right:4px">FILTER:</span>
   <button class="filter-btn active" onclick="filterRows('all',this)">All</button>
-  <button class="filter-btn" onclick="filterRows('Critical',this)">Critical</button>
-  <button class="filter-btn" onclick="filterRows('High',this)">High</button>
-  <button class="filter-btn" onclick="filterRows('Medium',this)">Medium</button>
+  <button class="filter-btn" onclick="filterRows('High',this)">High Risk</button>
+  <button class="filter-btn" onclick="filterRows('Medium',this)">Medium Risk</button>
+  <button class="filter-btn" onclick="filterRows('Low',this)">Low Risk</button>
+  <span class="filter-sep">|</span>
   <button class="filter-btn" onclick="filterRows('inactive',this)">Inactive</button>
+  <button class="filter-btn" onclick="filterRows('unused',this)">Likely Unused</button>
+  <button class="filter-btn" onclick="filterRows('overpriv',this)">Overprivileged</button>
+  <button class="filter-btn" onclick="filterRows('highlyprivileged',this)">Highly Privileged</button>
+  <button class="filter-btn" onclick="filterRows('scim',this)">SCIM</button>
+  <span class="filter-sep">|</span>
+  <button class="filter-btn" onclick="filterRows('consent-admin',this)">Admin Consent</button>
+  <button class="filter-btn" onclick="filterRows('consent-user',this)">User Consent</button>
 </div>
 
-<p class="section-title">Application Details</p>
+<p class="section-title">Application Details <span style="font-weight:400;text-transform:none">(click column headers to sort)</span></p>
 <div class="table-wrap">
 <table id="mainTable">
 <thead>
 <tr>
-  <th>Application</th>
-  <th>Type</th>
-  <th>Risk Level</th>
-  <th>Defender Level</th>
+  <th data-sort="text" onclick="sortTable(0,this)">Application<span class="sort-icon"></span></th>
+  <th data-sort="text" onclick="sortTable(1,this)">Type<span class="sort-icon"></span></th>
+  <th data-sort="risk" onclick="sortTable(2,this)">Risk Level<span class="sort-icon"></span></th>
+  <th data-sort="num" onclick="sortTable(3,this)">Score<span class="sort-icon"></span></th>
+  <th>Flags</th>
   <th>Permissions</th>
-  <th>Last Sign-In</th>
-  <th>Sign-Ins (window)</th>
-  <th>Status</th>
+  <th data-sort="text" onclick="sortTable(6,this)">Consent<span class="sort-icon"></span></th>
+  <th data-sort="date" onclick="sortTable(7,this)">Last Sign-In<span class="sort-icon"></span></th>
+  <th data-sort="num" onclick="sortTable(8,this)">Total<span class="sort-icon"></span></th>
+  <th data-sort="num" onclick="sortTable(9,this)">&#128100;<span class="sort-icon"></span></th>
+  <th data-sort="num" onclick="sortTable(10,this)">&#128274;<span class="sort-icon"></span></th>
+  <th data-sort="num" onclick="sortTable(11,this)">&#9881;<span class="sort-icon"></span></th>
+  <th data-sort="text" onclick="sortTable(12,this)">Status<span class="sort-icon"></span></th>
 </tr>
 </thead>
 <tbody>
@@ -353,9 +423,57 @@ function filterRows(level, btn) {
   const rows = document.querySelectorAll('#mainTable tbody tr');
   rows.forEach(r => {
     if (level === 'all') { r.style.display = ''; return; }
-    if (level === 'inactive') { r.style.display = r.dataset.inactive === 'true' ? '' : 'none'; return; }
+    if (level === 'inactive')   { r.style.display = r.dataset.inactive === 'true' ? '' : 'none'; return; }
+    if (level === 'unused')     { r.style.display = r.dataset.unused   === 'true' ? '' : 'none'; return; }
+    if (level === 'overpriv')   { r.style.display = r.dataset.overpriv === 'true' ? '' : 'none'; return; }
+    if (level === 'highlyprivileged') { r.style.display = r.dataset.highlyprivileged === 'true' ? '' : 'none'; return; }
+    if (level === 'scim')       { r.style.display = r.dataset.scim     === 'true' ? '' : 'none'; return; }
+    if (level === 'consent-admin') { r.style.display = (r.dataset.consent === 'Admin' || r.dataset.consent === 'Both') ? '' : 'none'; return; }
+    if (level === 'consent-user')  { r.style.display = (r.dataset.consent === 'User'  || r.dataset.consent === 'Both') ? '' : 'none'; return; }
     r.style.display = r.dataset.risk === level ? '' : 'none';
   });
+}
+
+function sortTable(colIdx, th) {
+  const table = document.getElementById('mainTable');
+  const tbody = table.querySelector('tbody');
+  const rows  = Array.from(tbody.querySelectorAll('tr'));
+  const sortType = th.dataset.sort;
+
+  // Determine sort direction
+  const isAsc = th.classList.contains('sorted-asc');
+  table.querySelectorAll('th').forEach(h => { h.classList.remove('sorted-asc','sorted-desc'); });
+  th.classList.add(isAsc ? 'sorted-desc' : 'sorted-asc');
+  const dir = isAsc ? -1 : 1;
+
+  const riskOrder = {'High':0,'Medium':1,'Low':2,'None':3};
+
+  rows.sort((a, b) => {
+    let va = a.cells[colIdx].dataset.val || a.cells[colIdx].textContent.trim();
+    let vb = b.cells[colIdx].dataset.val || b.cells[colIdx].textContent.trim();
+
+    if (sortType === 'num') {
+      va = parseFloat(va) || 0;
+      vb = parseFloat(vb) || 0;
+      return (va - vb) * dir;
+    }
+    if (sortType === 'risk') {
+      va = riskOrder[va] !== undefined ? riskOrder[va] : 99;
+      vb = riskOrder[vb] !== undefined ? riskOrder[vb] : 99;
+      return (va - vb) * dir;
+    }
+    if (sortType === 'date') {
+      va = va === '\u2014' ? '' : va;
+      vb = vb === '\u2014' ? '' : vb;
+      if (!va && !vb) return 0;
+      if (!va) return 1 * dir;
+      if (!vb) return -1 * dir;
+      return (new Date(va) - new Date(vb)) * dir;
+    }
+    return va.localeCompare(vb) * dir;
+  });
+
+  rows.forEach(r => tbody.appendChild(r));
 }
 </script>
 </body>
@@ -364,47 +482,43 @@ function filterRows(level, btn) {
 }
 
 function Build-HtmlTableRow {
-    param([object]$Row)
+    param(
+        [object]$Row,
+        [string]$TenantId
+    )
 
-    $riskClass    = switch ($Row.OverallRiskLevel) {
-        'Critical' { 'badge-critical' }
-        'High'     { 'badge-high'     }
-        'Medium'   { 'badge-medium'   }
-        'Low'      { 'badge-low'      }
-        default    { 'badge-none'     }
+    $riskClass = switch ($Row.OverallRiskLevel) {
+        'High'     { 'badge-high'   }
+        'Medium'   { 'badge-medium' }
+        'Low'      { 'badge-low'    }
+        default    { 'badge-none'   }
     }
 
-    $defClass = switch ($Row.OverallDefenderRiskLevel) {
-        'High'   { 'def-high'   }
-        'Medium' { 'def-medium' }
-        'Low'    { 'def-low'    }
-        default  { ''          }
+    # Flags column: SCIM, Overprivileged, Highly Privileged, Likely Unused
+    $flagsHtml = @()
+    if ($Row.IsLikelyUnused)      { $flagsHtml += "<span class='badge badge-unused' title='Inactive, no sign-ins, created &gt; 90 days ago'>Likely Unused</span>" }
+    if ($Row.IsOverprivileged)    { $flagsHtml += "<span class='badge badge-overpriv' title='High-risk permissions with minimal usage'>Overprivileged</span>" }
+    if ($Row.IsHighlyPrivileged -and -not $Row.IsOverprivileged) {
+        $flagsHtml += "<span class='badge badge-highlyprivileged' title='Has High severity permissions'>Highly Privileged</span>"
     }
+    if ($Row.IsScimApp)           { $flagsHtml += "<span class='badge badge-scim'>SCIM</span>" }
+    $flagsCell = if ($flagsHtml.Count -gt 0) { $flagsHtml -join '<br>' } else { '<span style="color:#9ca3af">&mdash;</span>' }
 
-    $defBadge = if ($defClass) {
-        "<span class='def-badge $defClass'>$([System.Net.WebUtility]::HtmlEncode($Row.OverallDefenderRiskLevel))</span>"
-    } else { '<span style="color:#9ca3af">—</span>' }
-
-    # Build sensitive permission list for the cell
+    # Build permission list showing ALL permissions (not just sensitive)
     $permHtml = ''
-    $allSensitive = @()
-    if ($Row._appPermissions) {
-        $allSensitive += @($Row._appPermissions | Where-Object { $_.IsSensitive })
-    }
-    if ($Row._delegatedPermissions) {
-        $allSensitive += @($Row._delegatedPermissions | Where-Object { $_.IsSensitive })
-    }
+    $allPerms = @()
+    if ($Row._appPermissions)       { $allPerms += @($Row._appPermissions) }
+    if ($Row._delegatedPermissions) { $allPerms += @($Row._delegatedPermissions) }
 
-    if ($allSensitive.Count -gt 0) {
-        $permLines = $allSensitive | Sort-Object { @{'Critical'=0;'High'=1;'Medium'=2;'Low'=3}[$_.RiskLevel] } |
+    if ($allPerms.Count -gt 0) {
+        $permLines = $allPerms | Sort-Object { @{'High'=0;'Medium'=1;'Low'=2;'None'=3;'Unknown'=3}[$_.RiskLevel] } |
             ForEach-Object {
-                $pClass = "perm-$($_.RiskLevel.ToLower())"
-                $dClass = if ($_.DefenderRiskLevel -ne 'Unknown') { "def-badge def-$($_.DefenderRiskLevel.ToLower())" } else { '' }
-                $dTag   = if ($dClass) { " <span class='$dClass'>D:$([System.Net.WebUtility]::HtmlEncode($_.DefenderRiskLevel))</span>" } else { '' }
-                "<span class='$pClass'>$([System.Net.WebUtility]::HtmlEncode($_.PermissionName))</span>$dTag"
+                $pClass = if ($_.IsSensitive) { "perm-$($_.RiskLevel.ToLower())" } else { 'perm-none' }
+                $typeTag = if ($_.PermissionType -eq 'Delegated') { ' <span style="color:#9ca3af;font-size:0.6rem">[D]</span>' } else { '' }
+                "<span class='$pClass'>$([System.Net.WebUtility]::HtmlEncode($_.PermissionName))$typeTag</span>"
             }
-        $preview  = ($permLines | Select-Object -First 3) -join '<br>'
-        $remaining = $allSensitive.Count - 3
+        $preview  = ($permLines | Select-Object -First 5) -join '<br>'
+        $remaining = $allPerms.Count - 5
         if ($remaining -gt 0) {
             $fullList = $permLines -join '<br>'
             $permHtml  = "<div class='perms-list'>$preview<br><details><summary>+$remaining more</summary><div>$fullList</div></details></div>"
@@ -414,18 +528,28 @@ function Build-HtmlTableRow {
         }
     }
     else {
-        $permHtml = '<span style="color:#9ca3af;font-size:0.7rem">None flagged</span>'
+        $permHtml = '<span style="color:#9ca3af;font-size:0.7rem">No permissions</span>'
+    }
+
+    # Consent cell
+    $consentHtml = switch ($Row.ConsentType) {
+        'Admin' { "<span class='badge badge-consent-admin'>Admin</span>" }
+        'User'  { "<span class='badge badge-consent-user'>User ($($Row.UserConsentedCount))</span>" }
+        'Both'  { "<span class='badge badge-consent-admin'>Admin</span><br><span class='badge badge-consent-user'>User ($($Row.UserConsentedCount))</span>" }
+        default { '<span style="color:#9ca3af">&mdash;</span>' }
     }
 
     # Sign-in cell
-    $lastSeen = if ($Row.LastSeenOverall) { $Row.LastSeenOverall.ToString('yyyy-MM-dd') } else { '—' }
+    $lastSeen = if ($Row.LastSeenOverall) { $Row.LastSeenOverall.ToString('yyyy-MM-dd') } else { '&mdash;' }
     $daysHtml = if ($null -ne $Row.DaysSinceLastSignIn) {
         $cls = if ($Row.IsInactive) { 'days-inactive' } else { '' }
         "<span class='days-num $cls'>$($Row.DaysSinceLastSignIn)d ago</span>"
     } else { '<span style="color:#9ca3af">No data</span>' }
 
     # Status badge
-    $statusHtml = if ($Row.IsInactive) {
+    $statusHtml = if ($Row.IsLikelyUnused) {
+        "<span class='badge badge-unused'>Deletion candidate</span>"
+    } elseif ($Row.IsInactive) {
         "<span class='inactive-label'>Inactive</span>"
     } else {
         "<span style='color:#166534;font-weight:600'>Active</span>"
@@ -437,27 +561,38 @@ function Build-HtmlTableRow {
         "<span style='font-size:0.65rem;background:#dbeafe;color:#1e40af;padding:2px 6px;border-radius:4px'>EA</span>"
     }
 
-    $name    = [System.Net.WebUtility]::HtmlEncode($Row.DisplayName)
-    $appId   = [System.Net.WebUtility]::HtmlEncode($Row.AppId)
-    $isInact = if ($Row.IsInactive) { 'true' } else { 'false' }
+    $name     = [System.Net.WebUtility]::HtmlEncode($Row.DisplayName)
+    $appId    = [System.Net.WebUtility]::HtmlEncode($Row.AppId)
+    $objId    = [System.Net.WebUtility]::HtmlEncode($Row.ObjectId)
+    $isInact  = if ($Row.IsInactive) { 'true' } else { 'false' }
+    $isUnused = if ($Row.IsLikelyUnused) { 'true' } else { 'false' }
+    $isOverp  = if ($Row.IsOverprivileged) { 'true' } else { 'false' }
+    $isHiPriv = if ($Row.IsHighlyPrivileged) { 'true' } else { 'false' }
+    $isScim   = if ($Row.IsScimApp) { 'true' } else { 'false' }
+    $rowClass = if ($Row.IsLikelyUnused) { 'row-unused' } else { '' }
+
+    # Direct link to Entra portal
+    $entraLink = "https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ManagedAppMenuBlade/~/Overview/objectId/$objId/appId/$appId"
 
     return @"
-<tr data-risk="$($Row.OverallRiskLevel)" data-inactive="$isInact">
-  <td>
+<tr class="$rowClass" data-risk="$($Row.OverallRiskLevel)" data-inactive="$isInact" data-unused="$isUnused" data-overpriv="$isOverp" data-highlyprivileged="$isHiPriv" data-scim="$isScim" data-consent="$($Row.ConsentType)">
+  <td data-val="$name">
     <strong>$name</strong><br>
-    <span style="font-size:0.68rem;color:#9ca3af">$appId</span>
+    <span style="font-size:0.68rem;color:#9ca3af">$appId</span><br>
+    <a href="$entraLink" target="_blank" rel="noopener" class="app-link">Open in Entra &#8599;</a>
   </td>
   <td>$typeBadge</td>
-  <td><span class="badge $riskClass">$($Row.OverallRiskLevel)</span></td>
-  <td>$defBadge</td>
+  <td data-val="$($Row.OverallRiskLevel)"><span class="badge $riskClass">$($Row.OverallRiskLevel)</span></td>
+  <td data-val="$($Row.RiskScore)" style="text-align:center;font-weight:600">$($Row.RiskScore)</td>
+  <td>$flagsCell</td>
   <td>$permHtml</td>
-  <td>$lastSeen<br>$daysHtml</td>
-  <td style="text-align:center">
-    <span title="Interactive">&#128100; $($Row.InteractiveSignInsInWindow)</span>&nbsp;
-    <span title="Non-Interactive">&#128274; $($Row.NonInteractiveSignInsInWindow)</span>&nbsp;
-    <span title="Service Principal">&#128736; $($Row.SpSignInsInWindow)</span>
-  </td>
-  <td>$statusHtml</td>
+  <td>$consentHtml</td>
+  <td data-val="$lastSeen">$lastSeen<br>$daysHtml</td>
+  <td data-val="$($Row.TotalSignInsInWindow)" style="text-align:center">$($Row.TotalSignInsInWindow)</td>
+  <td data-val="$($Row.InteractiveSignInsInWindow)" style="text-align:center" title="Interactive sign-ins">$($Row.InteractiveSignInsInWindow)</td>
+  <td data-val="$($Row.NonInteractiveSignInsInWindow)" style="text-align:center" title="Non-interactive sign-ins">$($Row.NonInteractiveSignInsInWindow)</td>
+  <td data-val="$($Row.SpSignInsInWindow)" style="text-align:center" title="Service principal sign-ins">$($Row.SpSignInsInWindow)</td>
+  <td data-val="$statusHtml">$statusHtml</td>
 </tr>
 "@
 }

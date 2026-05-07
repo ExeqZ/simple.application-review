@@ -48,7 +48,8 @@ function Get-EnterpriseApplications {
         'appOwnerOrganizationId', 'createdDateTime', 'description', 'notes',
         'homepage', 'replyUrls', 'servicePrincipalNames', 'tags',
         'signInAudience', 'verifiedPublisher', 'appRoles', 'oauth2PermissionScopes',
-        'signInActivity'  # beta-only — last interactive / non-interactive / SP sign-in
+        'signInActivity',  # beta-only — last interactive / non-interactive / SP sign-in
+        'preferredSingleSignOnMode'  # indicates SCIM/provisioning configuration
     ) -join ','
 
     # Use beta for signInActivity support
@@ -241,5 +242,80 @@ function Add-TypeFields {
     }
 }
 
+function Test-ScimProvisioning {
+    <#
+    .SYNOPSIS
+        Checks whether a service principal uses SCIM provisioning by querying synchronization jobs.
+
+    .PARAMETER AccessToken
+        Bearer access token.
+
+    .PARAMETER ServicePrincipalId
+        Object ID of the service principal.
+
+    .OUTPUTS
+        Boolean. $true if SCIM/provisioning jobs are configured.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$AccessToken,
+
+        [Parameter(Mandatory)]
+        [string]$ServicePrincipalId
+    )
+
+    $uri = "https://graph.microsoft.com/beta/servicePrincipals/$ServicePrincipalId/synchronization/jobs"
+
+    try {
+        $jobs = Invoke-GraphRequest -AccessToken $AccessToken -Uri $uri -All
+        return ($jobs.Count -gt 0)
+    }
+    catch {
+        # 404 or 403 means no provisioning is configured or we lack permission
+        return $false
+    }
+}
+
+function Get-BulkScimStatus {
+    <#
+    .SYNOPSIS
+        Checks SCIM/provisioning status for a list of service principals efficiently.
+
+    .PARAMETER AccessToken
+        Bearer access token.
+
+    .PARAMETER ServicePrincipals
+        Array of service principal objects.
+
+    .OUTPUTS
+        Hashtable mapping ServicePrincipalId → $true/$false.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$AccessToken,
+
+        [Parameter(Mandatory)]
+        [object[]]$ServicePrincipals
+    )
+
+    $result = @{}
+    $total  = $ServicePrincipals.Count
+    $idx    = 0
+
+    foreach ($sp in $ServicePrincipals) {
+        $idx++
+        Write-Progress -Activity 'Checking SCIM provisioning' `
+            -Status "$idx / $total — $($sp.displayName)" `
+            -PercentComplete (($idx / $total) * 100)
+
+        $result[$sp.id] = Test-ScimProvisioning -AccessToken $AccessToken -ServicePrincipalId $sp.id
+    }
+
+    Write-Progress -Activity 'Checking SCIM provisioning' -Completed
+    return $result
+}
+
 Export-ModuleMember -Function Get-EnterpriseApplications, Get-ManagedIdentities, Get-AllApplications,
-    Get-ServicePrincipalById, Clear-ServicePrincipalCache
+    Get-ServicePrincipalById, Clear-ServicePrincipalCache, Test-ScimProvisioning, Get-BulkScimStatus
