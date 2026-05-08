@@ -35,6 +35,13 @@
     If set, errors for one tenant are logged but processing continues for remaining tenants.
     Default: stop on first error.
 
+.PARAMETER DebugLog
+    Enables debug mode. Starts a PowerShell transcript that captures all console output,
+    verbose messages, and detailed step-by-step logging to a file in the report folder.
+
+.PARAMETER ShowHelp
+    Displays a detailed help manual with usage examples and parameter descriptions, then exits.
+
 .EXAMPLE
     # Run all enabled tenants from default tenants folder
     .\Invoke-MultiTenantReview.ps1
@@ -61,11 +68,81 @@ param(
     [int]   $LogAnalyticsLookbackDays = 0,    # 0 = use per-tenant config (default 365)
     [switch]$SkipDetailedSignInLogs,
     [switch]$IncludeRawJson,
-    [switch]$ContinueOnError
+    [switch]$ContinueOnError,
+    [switch]$DebugLog,
+    [switch]$ShowHelp
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = if ($ContinueOnError) { 'Continue' } else { 'Stop' }
+
+# ── Show help and exit ────────────────────────────────────────────────────────
+if ($ShowHelp) {
+    Write-Host @"
+
+  ╔══════════════════════════════════════════════════════════════════════╗
+  ║      Invoke-MultiTenantReview.ps1 — Multi-Tenant Application Review ║
+  ╚══════════════════════════════════════════════════════════════════════╝
+
+  DESCRIPTION
+    Runs the enterprise application review across multiple M365 tenants.
+    Reads tenant JSON config files from the tenants folder, processes each
+    one, and produces per-tenant reports plus a cross-tenant aggregate summary.
+
+  USAGE
+    .\Invoke-MultiTenantReview.ps1 [options]
+
+  OPTIONS
+    -TenantsFolder <path>                 Folder with tenant config files (default: ./tenants)
+    -OutputFolder <path>                  Report output folder (default: ./reports)
+    -TenantFilter <string>                Process only matching tenants (partial match on name/id)
+    -LookbackDays <n>                     Override Graph audit log lookback (0 = use config)
+    -InactivityThresholdDays <n>          Override inactivity threshold (0 = use config)
+    -LogAnalyticsLookbackDays <n>         Override LA lookback (0 = use config)
+    -SkipDetailedSignInLogs               No audit log queries for all tenants
+    -IncludeRawJson                       Also write JSON per tenant
+    -ContinueOnError                      Continue on error for remaining tenants
+    -DebugLog                             Full transcript logging to report folder
+    -ShowHelp                             Show this help and exit
+
+  TENANT CONFIG
+    Each JSON file in the tenants folder represents one customer.
+    Copy tenants/sample-customer.json.sample to <customer>.json and fill in values.
+    Use helpers/New-TenantSetup.ps1 to create a new config automatically.
+
+  EXAMPLES
+    # Run all enabled tenants
+    .\Invoke-MultiTenantReview.ps1
+
+    # Run only tenants matching 'Contoso'
+    .\Invoke-MultiTenantReview.ps1 -TenantFilter 'Contoso' -ContinueOnError
+
+    # Debug mode
+    .\Invoke-MultiTenantReview.ps1 -DebugLog
+
+  OUTPUT
+    reports/<TenantName>_<timestamp>/     Per-tenant HTML/CSV reports
+    reports/_summary/                     Cross-tenant aggregate summary (HTML + CSV)
+    reports/debug-transcript_*.log        Debug log (with -DebugLog)
+
+"@ -ForegroundColor Cyan
+    return
+}
+
+# ── Debug / transcript mode ───────────────────────────────────────────────────
+$script:DebugTranscriptPath = $null
+if ($DebugLog) {
+    if (-not (Test-Path $OutputFolder)) {
+        New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
+    }
+    $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
+    $script:DebugTranscriptPath = Join-Path $OutputFolder "debug-transcript_$timestamp.log"
+    Start-Transcript -Path $script:DebugTranscriptPath -Append
+    $VerbosePreference = 'Continue'
+    Write-Host "[DEBUG] Transcript started: $($script:DebugTranscriptPath)" -ForegroundColor Magenta
+    Write-Host "[DEBUG] PowerShell $($PSVersionTable.PSVersion) on $([Environment]::OSVersion.VersionString)" -ForegroundColor Magenta
+    Write-Host "[DEBUG] Parameters: $($PSBoundParameters | ConvertTo-Json -Compress -Depth 2)" -ForegroundColor Magenta
+}
 
 # ── Load config from tenants folder ──────────────────────────────────────────
 if (-not (Test-Path $TenantsFolder)) {
@@ -401,4 +478,9 @@ if ($allTenantSummaries.Count -gt 0) {
 if ($errors.Count -gt 0) {
     Write-Warning "`n$($errors.Count) tenant(s) failed:"
     $errors | ForEach-Object { Write-Warning "  $($_.TenantName): $($_.Error)" }
+}
+
+if ($DebugLog) {
+    Write-Verbose "[DEBUG] Multi-tenant review completed at $(Get-Date -Format 'o')"
+    Stop-Transcript -ErrorAction SilentlyContinue
 }

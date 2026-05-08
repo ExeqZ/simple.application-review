@@ -65,6 +65,14 @@
 .PARAMETER IncludeRawJson
     Also write a raw JSON file containing the full result set.
 
+.PARAMETER DebugLog
+    Enables debug mode. Starts a PowerShell transcript that captures all console output,
+    verbose messages, and detailed step-by-step logging to a file in the report folder.
+    Also sets $VerbosePreference to 'Continue' so all Write-Verbose messages are visible.
+
+.PARAMETER ShowHelp
+    Displays a detailed help manual with usage examples and parameter descriptions, then exits.
+
 .EXAMPLE
     # Certificate (recommended)
     .\Invoke-TenantReview.ps1 -TenantId 'contoso.onmicrosoft.com' -ClientId 'xxxxxxxx' `
@@ -75,16 +83,27 @@
     .\Invoke-TenantReview.ps1 -TenantId 'contoso.onmicrosoft.com' -ClientId 'xxxxxxxx' `
         -ClientSecretFile ./secrets/contoso.secret
 
+.EXAMPLE
+    # Debug mode with full transcript
+    .\Invoke-TenantReview.ps1 -TenantId 'contoso.onmicrosoft.com' -ClientId 'xxxxxxxx' `
+        -CertificateThumbprint 'AABB...' -DebugLog
+
 .NOTES
     Required app permissions: Application.Read.All, Directory.Read.All, AuditLog.Read.All
     (AuditLog.Read.All can be omitted with -SkipDetailedSignInLogs)
 #>
-[CmdletBinding(DefaultParameterSetName = 'SecretFile')]
+[CmdletBinding(DefaultParameterSetName = 'Help')]
 param(
-    [Parameter(Mandatory)]
+    [Parameter(Mandatory, ParameterSetName = 'Secret')]
+    [Parameter(Mandatory, ParameterSetName = 'SecretFile')]
+    [Parameter(Mandatory, ParameterSetName = 'CertThumbprint')]
+    [Parameter(Mandatory, ParameterSetName = 'CertFile')]
     [string]$TenantId,
 
-    [Parameter(Mandatory)]
+    [Parameter(Mandatory, ParameterSetName = 'Secret')]
+    [Parameter(Mandatory, ParameterSetName = 'SecretFile')]
+    [Parameter(Mandatory, ParameterSetName = 'CertThumbprint')]
+    [Parameter(Mandatory, ParameterSetName = 'CertFile')]
     [string]$ClientId,
 
     [Parameter(Mandatory, ParameterSetName = 'Secret')]
@@ -115,11 +134,100 @@ param(
     [switch]$IncludeDisabledApps,
     [switch]$ExcludeManagedIdentities,
     [switch]$SkipDetailedSignInLogs,
-    [switch]$IncludeRawJson
+    [switch]$IncludeRawJson,
+    [switch]$DebugLog,
+    [switch]$ShowHelp
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# ── Show help and exit ────────────────────────────────────────────────────────
+if ($ShowHelp) {
+    Write-Host @"
+
+  ╔══════════════════════════════════════════════════════════════════════╗
+  ║          Invoke-TenantReview.ps1 — Application Review Tool         ║
+  ╚══════════════════════════════════════════════════════════════════════╝
+
+  DESCRIPTION
+    Reviews all enterprise applications and managed identities in a single
+    M365 / Entra ID tenant. Analyses permissions against the App Governance
+    risk classification, checks sign-in activity, detects SCIM provisioning,
+    and identifies overprivileged or likely unused applications.
+
+  USAGE
+    .\Invoke-TenantReview.ps1 -TenantId <id> -ClientId <id> <auth-params> [options]
+
+  AUTHENTICATION (pick one)
+    -CertificateThumbprint <thumb>        Certificate from local store (recommended)
+    -CertificatePath <pfx> [-CertificatePasswordFile <file>]   PFX file
+    -ClientSecretFile <file>              File containing client secret
+    -ClientSecret <string>                Plain text secret (not recommended)
+
+  OPTIONS
+    -OutputFolder <path>                  Report output folder (default: ./reports)
+    -LookbackDays <n>                     Graph audit log lookback (default: 30)
+    -InactivityThresholdDays <n>          Days to flag inactive (default: 180)
+    -LogAnalyticsWorkspaceId <guid>       Enable Log Analytics mode
+    -LogAnalyticsLookbackDays <n>         LA lookback (default: 365)
+    -IncludeFirstPartyMicrosoftApps       Include Microsoft first-party apps
+    -IncludeDisabledApps                  Include disabled service principals
+    -ExcludeManagedIdentities             Skip managed identities
+    -SkipDetailedSignInLogs               No audit log queries (fast, no P1 needed)
+    -IncludeRawJson                       Also write JSON report
+    -DebugLog                             Full transcript logging to report folder
+    -ShowHelp                             Show this help and exit
+
+  EXAMPLES
+    # Certificate auth
+    .\Invoke-TenantReview.ps1 -TenantId contoso.onmicrosoft.com ``
+        -ClientId xxxxxxxx -CertificateThumbprint AABB...
+
+    # Client secret file
+    .\Invoke-TenantReview.ps1 -TenantId contoso.onmicrosoft.com ``
+        -ClientId xxxxxxxx -ClientSecretFile ./secrets/contoso.secret
+
+    # Debug mode
+    .\Invoke-TenantReview.ps1 -TenantId contoso.onmicrosoft.com ``
+        -ClientId xxxxxxxx -CertificateThumbprint AABB... -DebugLog
+
+  REQUIRED APP PERMISSIONS
+    Application.Read.All     Enumerate service principals
+    Directory.Read.All       Resolve SP metadata
+    AuditLog.Read.All        Detailed sign-in logs (optional, skip with -SkipDetailedSignInLogs)
+
+  OUTPUT
+    reports/<TenantName>_<timestamp>/application-review.html   Filterable & sortable HTML
+    reports/<TenantName>_<timestamp>/application-review.csv    Flat CSV for Excel / Power BI
+    reports/<TenantName>_<timestamp>/application-review.json   Full JSON (with -IncludeRawJson)
+    reports/<TenantName>_<timestamp>/debug-transcript_*.log    Debug log (with -DebugLog)
+
+"@ -ForegroundColor Cyan
+    return
+}
+
+# ── Validate required params when not using -ShowHelp ─────────────────────────
+if (-not $TenantId -or -not $ClientId) {
+    Write-Host "ERROR: -TenantId and -ClientId are required. Use -ShowHelp to see usage." -ForegroundColor Red
+    return
+}
+
+# ── Debug / transcript mode ───────────────────────────────────────────────────
+$script:DebugTranscriptPath = $null
+if ($DebugLog) {
+    # Ensure output folder exists before starting transcript
+    if (-not (Test-Path $OutputFolder)) {
+        New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
+    }
+    $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
+    $script:DebugTranscriptPath = Join-Path $OutputFolder "debug-transcript_$timestamp.log"
+    Start-Transcript -Path $script:DebugTranscriptPath -Append
+    $VerbosePreference = 'Continue'
+    Write-Host "[DEBUG] Transcript started: $($script:DebugTranscriptPath)" -ForegroundColor Magenta
+    Write-Host "[DEBUG] PowerShell $($PSVersionTable.PSVersion) on $([Environment]::OSVersion.VersionString)" -ForegroundColor Magenta
+    Write-Host "[DEBUG] Parameters: $($PSBoundParameters | ConvertTo-Json -Compress -Depth 2)" -ForegroundColor Magenta
+}
 
 # ── Resolve module path ───────────────────────────────────────────────────────
 $moduleRoot = Join-Path $PSScriptRoot 'modules'
@@ -132,8 +240,11 @@ Import-Module (Join-Path $moduleRoot 'Reporting.psm1')      -Force
 
 Write-Host "`n=== Application Review — Tenant: $TenantId ===" -ForegroundColor Cyan
 
+if ($DebugLog) { Write-Verbose "[DEBUG] Starting review for tenant: $TenantId at $(Get-Date -Format 'o')" }
+
 # ── Authenticate ──────────────────────────────────────────────────────────────
 Write-Host "`n[1/6] Authenticating..." -ForegroundColor Yellow
+if ($DebugLog) { Write-Verbose "[DEBUG] Auth method: $($PSCmdlet.ParameterSetName)" }
 
 $tokenParams = @{ TenantId = $TenantId; ClientId = $ClientId }
 
@@ -165,6 +276,7 @@ switch ($PSCmdlet.ParameterSetName) {
 
 $accessToken = Get-GraphAccessToken @tokenParams
 Write-Host "  Authentication successful." -ForegroundColor Green
+if ($DebugLog) { Write-Verbose "[DEBUG] Access token acquired successfully" }
 
 # ── Resolve tenant display name ───────────────────────────────────────────────
 try {
@@ -193,6 +305,7 @@ $appParams = @{
 }
 $servicePrincipals = Get-AllApplications @appParams
 Write-Host "  Found $($servicePrincipals.Count) service principals to review." -ForegroundColor Green
+if ($DebugLog) { Write-Verbose "[DEBUG] Service principal count: $($servicePrincipals.Count), Filters: IncludeFirstParty=$IncludeFirstPartyMicrosoftApps IncludeDisabled=$IncludeDisabledApps ExcludeMI=$ExcludeManagedIdentities" }
 
 # ── Analyse permissions ───────────────────────────────────────────────────────
 Write-Host "`n[3/6] Analysing permissions..." -ForegroundColor Yellow
@@ -218,6 +331,7 @@ foreach ($sp in $servicePrincipals) {
 }
 Write-Progress -Activity 'Analysing permissions' -Completed
 Write-Host "  Permissions analysed." -ForegroundColor Green
+if ($DebugLog) { Write-Verbose "[DEBUG] Permissions analysed for $($permissionResults.Count) apps" }
 
 # ── Sign-in activity ──────────────────────────────────────────────────────────
 Write-Host "`n[4/6] Retrieving sign-in activity..." -ForegroundColor Yellow
@@ -289,6 +403,7 @@ else {
 $signInResults = Get-BulkSignInActivity @signInParams
 
 Write-Host "  Sign-in activity retrieved." -ForegroundColor Green
+if ($DebugLog) { Write-Verbose "[DEBUG] Sign-in results: $($signInResults.Count) records. Mode: $(if ($LogAnalyticsWorkspaceId) { 'LogAnalytics' } else { 'GraphAuditLog' })" }
 
 # ── SCIM / Provisioning detection ─────────────────────────────────────────────
 Write-Host "`n[5/6] Detecting SCIM provisioning..." -ForegroundColor Yellow
@@ -296,6 +411,7 @@ Write-Host "`n[5/6] Detecting SCIM provisioning..." -ForegroundColor Yellow
 $scimStatus = Get-BulkScimStatus -AccessToken $accessToken -ServicePrincipals $servicePrincipals
 $scimCount  = @($scimStatus.Values | Where-Object { $_ }).Count
 Write-Host "  Found $scimCount app(s) with SCIM provisioning configured." -ForegroundColor Green
+if ($DebugLog) { Write-Verbose "[DEBUG] SCIM detection complete. $scimCount of $($servicePrincipals.Count) apps have SCIM configured" }
 
 # ── Combine & report ──────────────────────────────────────────────────────────
 Write-Host "`n[6/6] Generating reports..." -ForegroundColor Yellow
@@ -334,6 +450,25 @@ $reportResult = Export-ReviewReport `
     -OutputFolder  $OutputFolder `
     -IncludeRawJson:$IncludeRawJson
 
+# Move debug transcript into the report folder if it was started in the base output folder
+if ($DebugLog -and $script:DebugTranscriptPath -and (Test-Path $script:DebugTranscriptPath)) {
+    $reportFolder = $reportResult.ReportFolder
+    if ($reportFolder -and (Test-Path $reportFolder)) {
+        $transcriptDest = Join-Path $reportFolder (Split-Path $script:DebugTranscriptPath -Leaf)
+        if ($script:DebugTranscriptPath -ne $transcriptDest) {
+            try {
+                Stop-Transcript -ErrorAction SilentlyContinue
+                Copy-Item -Path $script:DebugTranscriptPath -Destination $transcriptDest -Force
+                Start-Transcript -Path $transcriptDest -Append
+                Write-Host "[DEBUG] Transcript continued in report folder: $transcriptDest" -ForegroundColor Magenta
+            }
+            catch {
+                Write-Warning "Could not move transcript to report folder: $_"
+            }
+        }
+    }
+}
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 $highCount  = @($combinedResults | Where-Object { $_.OverallRiskLevel -eq 'High'     }).Count
 $medCount   = @($combinedResults | Where-Object { $_.OverallRiskLevel -eq 'Medium'   }).Count
@@ -351,5 +486,10 @@ Write-Host "  Overprivileged    : $overpCount"  -ForegroundColor $(if ($overpCou
 Write-Host "  SCIM provisioning : $scimCount"
 Write-Host "  Report folder     : $($reportResult.ReportFolder)" -ForegroundColor Cyan
 Write-Host ""
+
+if ($DebugLog) {
+    Write-Verbose "[DEBUG] Review completed at $(Get-Date -Format 'o')"
+    Stop-Transcript -ErrorAction SilentlyContinue
+}
 
 return $combinedResults

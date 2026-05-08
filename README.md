@@ -3,14 +3,33 @@
 PowerShell solution for reviewing all enterprise applications and managed identities in Microsoft 365 / Entra ID tenants. Built for **service providers managing multiple customers**.
 
 For each application and managed identity the tool reports:
-- Every application and delegated permission granted
-- **Internal risk level** (Critical / High / Medium / Low / None) based on abuse potential
-- **Microsoft Defender for Cloud Apps (MDCA) permission level** (High / Medium / Low) — the same classification visible in the Defender portal under *OAuth Apps*
-- **Sign-in activity** — last interactive, non-interactive, and service principal sign-in timestamp (from `signInActivity` on the SP object, no P1 licence required)
+- Every application and delegated permission granted (full listing)
+- **App Governance risk level** (High / Medium / Low) — the Microsoft Defender for Cloud Apps — App Governance classification
+- **Risk score** as a numeric value (High=3, Medium=2, Low=1, None=0)
+- **Overprivileged flag** — apps with high-risk permissions but minimal usage
+- **Highly privileged flag** — apps with any High severity permissions
+- **Consent type** — Admin consent vs. user consent, with count of user-consented principals
+- **SCIM / Provisioning detection** — apps with synchronization jobs configured
+- **Sign-in activity** — last interactive, non-interactive, and service principal sign-in timestamp
 - **Detailed sign-in counts** per type for a configurable lookback window (requires Entra ID P1/P2 + `AuditLog.Read.All`)
-- **Inactivity flag** — apps with no sign-in beyond a configurable threshold
+- **Likely unused detection** — highlights apps that are inactive, have no sign-ins, and were created > 90 days ago (deletion candidates)
+- **Direct link to Entra portal** for each application
 
-Output formats: **HTML** (self-contained, filterable), **CSV**, and optional **JSON**.
+Output formats: **HTML** (self-contained, filterable, sortable), **CSV**, and optional **JSON**.
+
+---
+
+## Getting Help
+
+```powershell
+# Show built-in help and usage examples
+.\Invoke-TenantReview.ps1 -ShowHelp
+.\Invoke-MultiTenantReview.ps1 -ShowHelp
+
+# PowerShell built-in help (same content)
+Get-Help .\Invoke-TenantReview.ps1 -Full
+Get-Help .\Invoke-MultiTenantReview.ps1 -Full
+```
 
 ---
 
@@ -50,10 +69,6 @@ To query sign-in history beyond the Graph audit log retention window:
 2. Grant the app registration the **Log Analytics Reader** Azure RBAC role on the workspace (Workspace → Access Control → Add role assignment).
 3. No additional app permission in Entra is needed — the token uses a different OAuth scope (`https://api.loganalytics.io/.default`).
 
-| Additional Permission | Where | Required for |
-|---|---|---|
-| `Log Analytics Reader` Azure RBAC | Workspace in Azure portal | Log Analytics queries |
-
 ### Authentication Methods (Recommended Order)
 
 1. **Certificate** — Store in the Windows cert store or provide a PFX file. Most secure.
@@ -79,13 +94,13 @@ To query sign-in history beyond the Graph audit log retention window:
     -ClientSecretFile './secrets/contoso.secret'
 
 # Fast mode (no P1 licence required)
-.\.\Invoke-TenantReview.ps1 `
+.\Invoke-TenantReview.ps1 `
     -TenantId    'contoso.onmicrosoft.com' `
     -ClientId    'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' `
     -CertificateThumbprint 'AABB...' `
     -SkipDetailedSignInLogs
 
-# Log Analytics mode — 365-day lookback (recommended for full history)
+# Log Analytics mode — 365-day lookback
 .\Invoke-TenantReview.ps1 `
     -TenantId                  'contoso.onmicrosoft.com' `
     -ClientId                  'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' `
@@ -93,18 +108,23 @@ To query sign-in history beyond the Graph audit log retention window:
     -LogAnalyticsWorkspaceId   'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' `
     -LogAnalyticsLookbackDays  365 `
     -InactivityThresholdDays   180
+
+# Debug mode — full transcript logging
+.\Invoke-TenantReview.ps1 `
+    -TenantId    'contoso.onmicrosoft.com' `
+    -ClientId    'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' `
+    -CertificateThumbprint 'AABB...' `
+    -DebugLog
 ```
 
 ### Multiple Tenants (MSP Mode)
 
 ```powershell
-# 1. Use the onboarding helper to set up a new customer (interactive, creates app + cert + config)
+# 1. Use the onboarding helper to set up a new customer
 .\helpers\New-TenantSetup.ps1 `
     -TenantId            'contoso.onmicrosoft.com' `
     -CustomerShortName   'contoso' `
     -CustomerDisplayName 'Contoso Ltd'
-
-# Then grant admin consent manually (see console output for direct link)
 
 # 2. Run all enabled tenants
 .\Invoke-MultiTenantReview.ps1
@@ -112,8 +132,8 @@ To query sign-in history beyond the Graph audit log retention window:
 # 3. Run only tenants matching a filter
 .\Invoke-MultiTenantReview.ps1 -TenantFilter 'Contoso' -ContinueOnError
 
-# 4. Custom lookback window
-.\Invoke-MultiTenantReview.ps1 -LookbackDays 60 -InactivityThresholdDays 120
+# 4. Debug mode
+.\Invoke-MultiTenantReview.ps1 -DebugLog
 ```
 
 ---
@@ -153,14 +173,14 @@ or run `helpers/New-TenantSetup.ps1` to generate one automatically.
 
 ### `config/sensitive-permissions.json`
 
-Permission catalogue with two risk dimensions per entry:
+Permission catalogue with risk levels per entry:
 
 | Field | Description |
 |---|---|
-| `riskLevel` | Internal assessment: `Critical` / `High` / `Medium` / `Low` |
-| `defenderRiskLevel` | Microsoft Defender for Cloud Apps classification: `High` / `Medium` / `Low` |
+| `riskLevel` | Legacy internal assessment (retained in JSON for reference) |
+| `defenderRiskLevel` | **Primary risk indicator** — Microsoft Defender for Cloud Apps — App Governance classification: `High` / `Medium` / `Low` |
 
-Add or modify entries to match your organisation's risk appetite. Both dimensions are shown side-by-side in the HTML report.
+Add or modify entries to match your organisation's risk appetite. The `defenderRiskLevel` field is used throughout reports.
 
 ---
 
@@ -170,28 +190,37 @@ Reports are written to `./reports/<TenantName>_<timestamp>/`.
 
 | File | Description |
 |---|---|
-| `application-review.html` | Self-contained filterable HTML with colour-coded risk + Defender levels |
+| `application-review.html` | Self-contained filterable & sortable HTML report with direct Entra portal links |
 | `application-review.csv` | Flat CSV — suitable for Excel / Power BI |
 | `application-review.json` | Raw JSON (with `-IncludeRawJson`) |
+| `debug-transcript_*.log` | Full debug transcript (with `-DebugLog`) |
 
 Multi-tenant runs also produce a `_summary/` folder with a cross-tenant aggregate HTML and CSV.
 
+### HTML Report Features
+
+- **Filterable** by: Risk Level (High/Medium/Low), Inactive, Likely Unused, Overprivileged, Highly Privileged, SCIM, Admin Consent, User Consent
+- **Sortable** by: all columns including sign-in counts (total, interactive, non-interactive, service principal), risk score, last sign-in date
+- **Direct links** to each application in the Entra portal
+- **Visual flags**: Likely Unused (yellow highlight), Overprivileged, Highly Privileged, SCIM badges
+- **Consent indicators**: Admin vs. User consent with count of user-consented principals
+- **Permission listing**: All permissions shown (not just sensitive), with delegated permissions marked `[D]`
+
 ### Key Columns
 
-| Column | Source |
+| Column | Description |
 |---|---|
-| `OverallRiskLevel` | Highest internal `riskLevel` across all sensitive permissions |
-| `OverallDefenderRiskLevel` | Highest `defenderRiskLevel` (MDCA) across all sensitive permissions |
-| `DefenderHighPermissions` | Semicolon-delimited list of Defender-High permissions |
-| `DefenderMediumPermissions` | Semicolon-delimited list of Defender-Medium permissions |
-| `LastInteractiveSignIn` | From `signInActivity.lastSignInDateTime` on the SP object |
-| `LastNonInteractiveSignIn` | From `signInActivity.lastNonInteractiveSignInDateTime` |
-| `LastServicePrincipalSignIn` | From `signInActivity.lastServicePrincipalSignInDateTime` |
-| `InteractiveSignInsInWindow` | Count from `/auditLogs/signIns` (P1 required) |
-| `NonInteractiveSignInsInWindow` | Count from `/auditLogs/nonInteractiveSignIns` |
-| `SpSignInsInWindow` | Count from `/auditLogs/servicePrincipalSignIns` |
-| `DistinctInteractiveUsers` | Unique UPNs who signed in interactively in the window |
-| `IsInactive` | `true` if `DaysSinceLastSignIn > InactivityThresholdDays` (default: **180 days**) |
+| `OverallRiskLevel` | Highest App Governance risk level across all permissions (High/Medium/Low/None) |
+| `RiskScore` | Numeric risk score: High=3, Medium=2, Low=1, None=0 |
+| `IsHighlyPrivileged` | `true` if the app has any High severity permissions |
+| `IsOverprivileged` | `true` if highly privileged but with ≤5 sign-ins in the lookback window |
+| `IsLikelyUnused` | `true` if inactive + no sign-ins + created > 90 days ago |
+| `IsScimApp` | `true` if SCIM provisioning / synchronization jobs are configured |
+| `ConsentType` | `Admin`, `User`, `Both`, or `None` |
+| `UserConsentedCount` | Number of distinct users who granted consent (for user-consented apps) |
+| `HighPermissions` | Semicolon-delimited list of High-risk permissions |
+| `AllPermissions` | Semicolon-delimited list of all granted permissions |
+| `EntraPortalLink` | Direct URL to the application in the Entra admin center |
 
 ### Sign-In Data Sources
 
@@ -199,7 +228,68 @@ Multi-tenant runs also produce a `_summary/` folder with a cross-tenant aggregat
 |---|---|---|---|
 | `signInActivity` (always on) | Automatic | Last timestamp only | None |
 | Graph audit log | Default (no extra params) | ~30 days | Entra ID P1/P2 |
-| Log Analytics | `-LogAnalyticsWorkspaceId` / `logAnalytics.enabled=true` | Up to 365+ days (workspace retention) | Entra ID P1/P2 + Log Analytics Reader RBAC |
+| Log Analytics | `-LogAnalyticsWorkspaceId` / `logAnalytics.enabled=true` | Up to 365+ days | Entra ID P1/P2 + Log Analytics Reader RBAC |
+
+---
+
+## Parameters
+
+### `Invoke-TenantReview.ps1`
+
+| Parameter | Description | Default |
+|---|---|---|
+| `-TenantId` | Azure AD tenant ID (GUID or domain) | *Required* |
+| `-ClientId` | Application (client) ID | *Required* |
+| `-CertificateThumbprint` | Certificate thumbprint from cert store | — |
+| `-CertificatePath` | Path to PFX file | — |
+| `-CertificatePasswordFile` | Path to PFX password file | — |
+| `-ClientSecretFile` | Path to client secret file | — |
+| `-ClientSecret` | Client secret (plain text, not recommended) | — |
+| `-OutputFolder` | Report output folder | `./reports` |
+| `-LookbackDays` | Graph audit log lookback window | `30` |
+| `-InactivityThresholdDays` | Days without sign-in to flag as inactive | `180` |
+| `-LogAnalyticsWorkspaceId` | Log Analytics workspace GUID | — |
+| `-LogAnalyticsLookbackDays` | Log Analytics lookback window | `365` |
+| `-IncludeFirstPartyMicrosoftApps` | Include Microsoft first-party apps | `$false` |
+| `-IncludeDisabledApps` | Include disabled service principals | `$false` |
+| `-ExcludeManagedIdentities` | Skip managed identities | `$false` |
+| `-SkipDetailedSignInLogs` | Use `signInActivity` property only | `$false` |
+| `-IncludeRawJson` | Also write a JSON report file | `$false` |
+| `-DebugLog` | Enable debug transcript logging | `$false` |
+| `-ShowHelp` | Show help manual and exit | `$false` |
+
+### `Invoke-MultiTenantReview.ps1`
+
+| Parameter | Description | Default |
+|---|---|---|
+| `-TenantsFolder` | Folder with tenant JSON config files | `./tenants` |
+| `-OutputFolder` | Report output folder | `./reports` |
+| `-TenantFilter` | Process only tenants matching this string | — |
+| `-LookbackDays` | Override Graph audit log lookback window | config default |
+| `-InactivityThresholdDays` | Override inactivity threshold | config default |
+| `-LogAnalyticsLookbackDays` | Override Log Analytics lookback | config default |
+| `-SkipDetailedSignInLogs` | Use `signInActivity` property only for all tenants | `$false` |
+| `-IncludeRawJson` | Also write JSON per tenant | `$false` |
+| `-ContinueOnError` | Continue on error for remaining tenants | `$false` |
+| `-DebugLog` | Enable debug transcript logging | `$false` |
+| `-ShowHelp` | Show help manual and exit | `$false` |
+
+---
+
+## Debugging
+
+Use `-DebugLog` to enable a full PowerShell transcript that captures all console output, verbose messages, and step-by-step details:
+
+```powershell
+.\Invoke-TenantReview.ps1 -TenantId '...' -ClientId '...' -CertificateThumbprint '...' -DebugLog
+```
+
+The transcript is saved to `<report-folder>/debug-transcript_<timestamp>.log` and includes:
+- All Graph API calls and responses (verbose level)
+- Permission analysis details per application
+- Sign-in data aggregation steps
+- SCIM detection results
+- Timing information for each step
 
 ---
 
@@ -209,19 +299,20 @@ Multi-tenant runs also produce a `_summary/` folder with a cross-tenant aggregat
 ├── Invoke-TenantReview.ps1          # Single-tenant entry point
 ├── Invoke-MultiTenantReview.ps1     # Multi-tenant MSP runner
 ├── helpers/
-│   └── New-TenantSetup.ps1          # Onboarding: creates app registration, cert, and config file
+│   ├── New-TenantSetup.ps1          # Onboarding: creates app registration, cert, and config file
+│   └── Invoke-CertificateRotation.ps1  # Certificate renewal helper
 ├── tenants/
 │   ├── sample-customer.json.sample  # Template — copy to <customer>.json and fill in values
 │   └── *.json                       # Per-customer config files (gitignored)
 ├── config/
-│   └── sensitive-permissions.json   # Permission catalogue with Defender risk levels
+│   └── sensitive-permissions.json   # Permission catalogue with App Governance risk levels
 ├── modules/
 │   ├── GraphAuth.psm1               # Auth (certificate JWT, client secret), throttle-aware Graph requests
-│   ├── Applications.psm1            # Enumerate enterprise apps & managed identities
-│   ├── Permissions.psm1             # App role assignments, delegated grants, risk analysis
+│   ├── Applications.psm1            # Enumerate enterprise apps & managed identities, SCIM detection
+│   ├── Permissions.psm1             # App role assignments, delegated grants, risk analysis, consent tracking
 │   ├── SignIns.psm1                 # Sign-in activity (SP object / Graph audit log / Log Analytics)
 │   ├── LogAnalytics.psm1            # Bulk KQL queries against Azure Monitor Log Analytics
-│   └── Reporting.psm1               # HTML, CSV, JSON output
+│   └── Reporting.psm1               # HTML (filterable/sortable), CSV, JSON output
 ├── reports/                         # Generated reports (gitignored)
 └── secrets/                         # Credential files (gitignored)
 ```
@@ -234,12 +325,13 @@ Multi-tenant runs also produce a `_summary/` folder with a cross-tenant aggregat
 - Secret files should have filesystem permissions restricted to the running service account.
 - Certificate auth uses `EphemeralKeySet` — private key never touches disk.
 - All Graph requests are read-only — no write operations are made to any tenant.
+- Debug transcripts may contain tenant metadata — treat them as sensitive.
 
 ---
 
-## Defender for Cloud Apps Risk Levels
+## App Governance Risk Levels
 
-`defenderRiskLevel` maps to the three permission severity levels in the Microsoft Defender for Cloud Apps portal (*Cloud Apps → OAuth Apps → Permission level*):
+Risk levels are sourced from the Microsoft Defender for Cloud Apps — **App Governance** classification:
 
 | Level | Typical permissions |
 |---|---|
@@ -247,4 +339,4 @@ Multi-tenant runs also produce a `_summary/` folder with a cross-tenant aggregat
 | **Medium** | Mailbox read, directory read, user/group read, Teams message read, SharePoint read/write, Conditional Access policy write |
 | **Low** | Audit log read, usage reports, service health, basic org metadata |
 
-Reference: [Manage OAuth app permissions — Microsoft Defender for Cloud Apps](https://learn.microsoft.com/en-us/defender-cloud-apps/manage-app-permissions)
+Reference: [App Governance — Microsoft Defender for Cloud Apps](https://learn.microsoft.com/en-us/defender-cloud-apps/app-governance-manage-app-governance)
