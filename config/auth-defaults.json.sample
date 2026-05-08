@@ -2,6 +2,7 @@
   "_comment": "Global authentication defaults for multi-tenant app. Copy to auth-defaults.json and fill in values. Individual tenant configs inherit these unless they define their own auth fields.",
   "_usage": "Register one multi-tenant app in your service provider tenant, then grant admin consent in each customer tenant via: https://login.microsoftonline.com/{customer-tenant-id}/adminconsent?client_id={clientId}",
 
+  "providerTenantId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "authMethod": "Certificate",
   "clientId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
 

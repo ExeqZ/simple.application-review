@@ -70,16 +70,47 @@ if (-not (Test-Path $TenantConfigFile)) {
 
 $config = Get-Content $TenantConfigFile -Raw | ConvertFrom-Json
 
-# Validate required fields
-foreach ($field in @('tenantId', 'clientId', 'authMethod')) {
-    if (-not $config.$field) { throw "Config is missing required field: $field" }
+# ── Detect global vs per-tenant auth ──────────────────────────────────────────
+# If the tenant config has no clientId it relies on config/auth-defaults.json
+$repoRoot         = Split-Path $PSScriptRoot -Parent
+$authDefaultsPath = Join-Path $repoRoot 'config' 'auth-defaults.json'
+$usingGlobalAuth  = $false
+$globalAuthConfig = $null
+
+if (-not $config.PSObject.Properties['clientId'] -or [string]::IsNullOrWhiteSpace($config.clientId)) {
+    # Minimal tenant config — must use global auth
+    if (-not (Test-Path $authDefaultsPath)) {
+        throw "Tenant config '$TenantConfigFile' has no clientId and config/auth-defaults.json was not found.`nFor global auth, create config/auth-defaults.json from config/auth-defaults.json.sample."
+    }
+    $globalAuthConfig = Get-Content $authDefaultsPath -Raw | ConvertFrom-Json
+    if (-not $globalAuthConfig.PSObject.Properties['clientId'] -or [string]::IsNullOrWhiteSpace($globalAuthConfig.clientId)) {
+        throw "config/auth-defaults.json has no clientId. Fill in the global auth config first."
+    }
+    if (-not $globalAuthConfig.PSObject.Properties['providerTenantId'] -or [string]::IsNullOrWhiteSpace($globalAuthConfig.providerTenantId)) {
+        throw "config/auth-defaults.json has no providerTenantId. Add the tenant ID of your service provider tenant."
+    }
+    if ($globalAuthConfig.authMethod -ne 'Certificate') {
+        throw "This script only supports authMethod=Certificate. Current authMethod in auth-defaults.json: $($globalAuthConfig.authMethod)"
+    }
+    $usingGlobalAuth = $true
+    $appId    = $globalAuthConfig.clientId
+    $tenantId = $globalAuthConfig.providerTenantId
+    Write-Host "  Global auth detected — rotating shared certificate in provider tenant." -ForegroundColor Yellow
+    Write-Host "  App clientId      : $appId" -ForegroundColor Gray
+    Write-Host "  Provider tenant   : $tenantId" -ForegroundColor Gray
 }
-if ($config.authMethod -ne 'Certificate') {
-    throw "This script only supports authMethod=Certificate. Current authMethod: $($config.authMethod)"
+else {
+    # Per-tenant config — validate required fields
+    foreach ($field in @('tenantId', 'clientId', 'authMethod')) {
+        if (-not $config.$field) { throw "Config is missing required field: $field" }
+    }
+    if ($config.authMethod -ne 'Certificate') {
+        throw "This script only supports authMethod=Certificate. Current authMethod: $($config.authMethod)"
+    }
+    $appId    = $config.clientId
+    $tenantId = $config.tenantId
 }
 
-$appId       = $config.clientId
-$tenantId    = $config.tenantId
 $shortName   = [System.IO.Path]::GetFileNameWithoutExtension($TenantConfigFile)
 $certSubject = "CN=AppReview-$shortName"
 
@@ -236,14 +267,17 @@ Invoke-MgGraphRequest -Method PATCH `
 Write-Host "  New certificate uploaded. Both old and new are now active." -ForegroundColor Green
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 5 — Update tenant config file
+# STEP 5 — Update config file (auth-defaults.json for global auth, tenant config otherwise)
 # ─────────────────────────────────────────────────────────────────────────────
-Write-Host "[5/5] Updating tenant config file..." -ForegroundColor Yellow
+Write-Host "[5/5] Updating config file..." -ForegroundColor Yellow
+
+# Determine which config object and file to update
+$configToUpdate   = if ($usingGlobalAuth) { $globalAuthConfig } else { $config }
+$configFileToSave = if ($usingGlobalAuth) { $authDefaultsPath } else { $TenantConfigFile }
 
 # Archive old cert files by renaming them (don't delete — might still be needed briefly)
-$oldPfxPath  = if ($config.certificatePath)         { Join-Path $OutputFolder $config.certificatePath } else { $null }
-$oldPassPath = if ($config.certificatePasswordFile)  { Join-Path $OutputFolder $config.certificatePasswordFile } else { $null }
-$oldCerPath  = $null
+$oldPfxPath  = if ($configToUpdate.PSObject.Properties['certificatePath']         -and $configToUpdate.certificatePath)         { Join-Path $OutputFolder $configToUpdate.certificatePath } else { $null }
+$oldPassPath = if ($configToUpdate.PSObject.Properties['certificatePasswordFile']  -and $configToUpdate.certificatePasswordFile)  { Join-Path $OutputFolder $configToUpdate.certificatePasswordFile } else { $null }
 if ($oldPfxPath -and (Test-Path $oldPfxPath)) {
     $archiveName = [System.IO.Path]::GetFileNameWithoutExtension($oldPfxPath) + "-archived-$timestamp" +
                    [System.IO.Path]::GetExtension($oldPfxPath)
@@ -263,15 +297,15 @@ if ($oldPassPath -and (Test-Path $oldPassPath)) {
 $relPfxPath  = 'secrets/' + [System.IO.Path]::GetFileName($newPfxFile)
 $relPassPath = 'secrets/' + [System.IO.Path]::GetFileName($newPassFile)
 
-$config.PSObject.Properties.Remove('certificateThumbprint')
-$config.PSObject.Properties.Remove('certificatePath')
-$config.PSObject.Properties.Remove('certificatePasswordFile')
+$configToUpdate.PSObject.Properties.Remove('certificateThumbprint')
+$configToUpdate.PSObject.Properties.Remove('certificatePath')
+$configToUpdate.PSObject.Properties.Remove('certificatePasswordFile')
 
-$config | Add-Member -NotePropertyName 'certificatePath'         -NotePropertyValue $relPfxPath  -Force
-$config | Add-Member -NotePropertyName 'certificatePasswordFile' -NotePropertyValue $relPassPath -Force
+$configToUpdate | Add-Member -NotePropertyName 'certificatePath'         -NotePropertyValue $relPfxPath  -Force
+$configToUpdate | Add-Member -NotePropertyName 'certificatePasswordFile' -NotePropertyValue $relPassPath -Force
 
-$config | ConvertTo-Json -Depth 10 | Set-Content -Path $TenantConfigFile -Encoding UTF8
-Write-Host "  Config updated: $TenantConfigFile" -ForegroundColor Green
+$configToUpdate | ConvertTo-Json -Depth 10 | Set-Content -Path $configFileToSave -Encoding UTF8
+Write-Host "  Config updated: $configFileToSave" -ForegroundColor Green
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Remove old key credentials from app registration (unless -KeepOldCertificate)
@@ -302,7 +336,7 @@ Write-Host ""
 Write-Host "=== Rotation complete ===" -ForegroundColor Cyan
 Write-Host "  New thumbprint : $($newCert.Thumbprint)"
 Write-Host "  Expires        : $($notAfter.ToString('yyyy-MM-dd'))"
-Write-Host "  Config file    : $TenantConfigFile"
+Write-Host "  Config updated : $configFileToSave"
 Write-Host "  New PFX        : $newPfxFile"
 Write-Host ""
 if ($KeepOldCertificate) {

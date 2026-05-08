@@ -48,6 +48,12 @@
     Folder where the generated config file and certificate are written.
     Defaults to the repository root (parent of the helpers folder).
 
+.PARAMETER UseGlobalAuth
+    When set, skips app registration creation entirely. Instead, reads the shared clientId
+    from config/auth-defaults.json, outputs the admin consent URL for the customer tenant,
+    and writes a minimal tenant config (tenantId, tenantName, enabled only).
+    Use this with the multi-tenant app model.
+
 .PARAMETER CertificateStoreInstead
     When set, the certificate is installed to the local certificate store
     (Cert:\CurrentUser\My) instead of exporting a PFX file. The config file will use
@@ -55,6 +61,14 @@
 
 .PARAMETER CertificateValidityYears
     Validity period of the generated certificate in years. Defaults to 1.
+
+.EXAMPLE
+    # Multi-tenant app: generate consent URL and minimal tenant config (no app registration created)
+    .\helpers\New-TenantSetup.ps1 `
+        -TenantId            'contoso.onmicrosoft.com' `
+        -CustomerShortName   'contoso' `
+        -CustomerDisplayName 'Contoso Ltd' `
+        -UseGlobalAuth
 
 .EXAMPLE
     # Connect first, then run setup for a customer (PFX export)
@@ -92,6 +106,9 @@ param(
     [string]$CustomerDisplayName,
 
     [string]$OutputFolder           = '',
+
+    # Use the shared multi-tenant app from config/auth-defaults.json instead of creating a new app
+    [switch]$UseGlobalAuth,
 
     [switch]$CertificateStoreInstead,
 
@@ -155,11 +172,72 @@ function Invoke-Rollback {
 
 Write-Host "`n=== Application Review — Tenant Onboarding ===" -ForegroundColor Cyan
 Write-Host "  Tenant       : $TenantId"
-Write-Host "  App name     : $appName"
+if (-not $UseGlobalAuth) {
+    Write-Host "  App name     : $appName"
+}
 Write-Host "  Config file  : $configFile"
 Write-Host ""
 
 try {
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GLOBAL AUTH PATH — no app registration, just consent URL + minimal config
+# ─────────────────────────────────────────────────────────────────────────────
+if ($UseGlobalAuth) {
+    $authDefaultsPath = Join-Path $OutputFolder 'config' 'auth-defaults.json'
+    if (-not (Test-Path $authDefaultsPath)) {
+        throw "config/auth-defaults.json not found. Create it from config/auth-defaults.json.sample first."
+    }
+    $globalAuth = Get-Content $authDefaultsPath -Raw | ConvertFrom-Json
+    if (-not $globalAuth.PSObject.Properties['clientId'] -or [string]::IsNullOrWhiteSpace($globalAuth.clientId)) {
+        throw "config/auth-defaults.json has no clientId. Fill it in before running with -UseGlobalAuth."
+    }
+    $sharedClientId = $globalAuth.clientId
+
+    Write-Host "=== Multi-Tenant App Onboarding ===" -ForegroundColor Cyan
+    Write-Host "  Mode         : Global auth (shared app registration)"
+    Write-Host "  ClientId     : $sharedClientId"
+    Write-Host "  Customer     : $CustomerDisplayName ($TenantId)"
+    Write-Host "  Config file  : $configFile"
+    Write-Host ""
+
+    Write-Host "STEP 1: Send this consent URL to the customer Global Admin:" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  https://login.microsoftonline.com/$TenantId/adminconsent?client_id=$sharedClientId" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Or open it now in the browser:" -ForegroundColor Gray
+    Write-Host "  Start-Process 'https://login.microsoftonline.com/$TenantId/adminconsent?client_id=$sharedClientId'" -ForegroundColor Gray
+    Write-Host ""
+
+    Write-Host "STEP 2: Writing minimal tenant config..." -ForegroundColor Yellow
+    $minimalConfig = [ordered]@{
+        tenantId   = $TenantId
+        tenantName = $CustomerDisplayName
+        enabled    = $true
+        settings   = [ordered]@{
+            '_comment'                     = 'Override global defaults for this tenant only.'
+            inactivityThresholdDays        = 180
+            signInLookbackDays             = 30
+            includeDisabledApps            = $false
+            includeManagedIdentities       = $true
+            includeFirstPartyMicrosoftApps = $false
+        }
+        logAnalytics = [ordered]@{
+            '_comment'   = 'Set enabled=true and supply workspaceId to use Log Analytics.'
+            enabled      = $false
+            workspaceId  = ''
+            lookbackDays = 365
+        }
+    }
+    $minimalConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $configFile -Encoding UTF8
+    Write-Host "  Config written: $configFile" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "=== Done ===" -ForegroundColor Cyan
+    Write-Host "  Once the customer has consented, run:"
+    Write-Host "     .\Invoke-MultiTenantReview.ps1 -TenantFilter '$CustomerShortName'" -ForegroundColor Green
+    Write-Host ""
+    return
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 1 — Verify active Microsoft Graph session
