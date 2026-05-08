@@ -62,6 +62,11 @@
     Only use the signInActivity property on the SP object. Faster; requires no Entra ID P1/P2
     or AuditLog.Read.All, but provides less detail (no per-user breakdown).
 
+.PARAMETER SignInBatchSize
+    Number of appIds to bundle per Graph $batch HTTP call for sign-in log queries.
+    Valid range: 1–20. Smaller values are more reliable with complex tenants;
+    larger values reduce total HTTP requests. Defaults to 5.
+
 .PARAMETER IncludeRawJson
     Also write a raw JSON file containing the full result set.
 
@@ -134,6 +139,11 @@ param(
     [switch]$IncludeDisabledApps,
     [switch]$ExcludeManagedIdentities,
     [switch]$SkipDetailedSignInLogs,
+
+    # Number of appIds per Graph $batch HTTP call for sign-in log queries (1–20)
+    [ValidateRange(1, 20)]
+    [int]$SignInBatchSize = 5,
+
     [switch]$IncludeRawJson,
     [switch]$DebugLog,
     [switch]$ShowHelp
@@ -175,6 +185,7 @@ if ($ShowHelp) {
     -IncludeDisabledApps                  Include disabled service principals
     -ExcludeManagedIdentities             Skip managed identities
     -SkipDetailedSignInLogs               No audit log queries (fast, no P1 needed)
+    -SignInBatchSize <n>                   AppIds per Graph `$batch call (1-20, default: 5)
     -IncludeRawJson                       Also write JSON report
     -DebugLog                             Full transcript logging to report folder
     -ShowHelp                             Show this help and exit
@@ -340,6 +351,7 @@ $signInParams = @{
     AccessToken             = $accessToken
     ServicePrincipals       = $servicePrincipals
     InactivityThresholdDays = $InactivityThresholdDays
+    SignInBatchSize          = $SignInBatchSize
 }
 
 if ($LogAnalyticsWorkspaceId) {

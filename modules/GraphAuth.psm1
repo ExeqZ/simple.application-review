@@ -475,4 +475,89 @@ function ConvertFrom-SecureStringPlainText {
     }
 }
 
-Export-ModuleMember -Function Get-GraphAccessToken, Get-GraphAccessTokenFromConfig, Get-LogAnalyticsAccessToken, Invoke-GraphRequest
+function Invoke-GraphBatchRequest {
+    <#
+    .SYNOPSIS
+        Sends a Graph JSON $batch request containing multiple sub-requests and returns
+        the individual responses. Each sub-request is processed independently by Graph,
+        so failures in one sub-request do not affect the others.
+
+    .PARAMETER AccessToken
+        Bearer access token.
+
+    .PARAMETER Requests
+        Array of hashtables, each with keys: id (string), method (string), url (string).
+        The url must be a relative path (e.g. '/auditLogs/signIns?$filter=...').
+
+    .PARAMETER BatchEndpointVersion
+        API version for the $batch endpoint itself. Defaults to 'v1.0'.
+        Individual sub-request URLs determine their own API version.
+
+    .OUTPUTS
+        Array of response objects. Each has: id, status, headers, body.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$AccessToken,
+
+        [Parameter(Mandatory)]
+        [hashtable[]]$Requests,
+
+        [string]$BatchEndpointVersion = 'v1.0'
+    )
+
+    $batchUri = "https://graph.microsoft.com/$BatchEndpointVersion/`$batch"
+
+    $headers = @{
+        'Authorization' = "Bearer $AccessToken"
+        'Content-Type'  = 'application/json'
+    }
+
+    $body = @{ requests = $Requests } | ConvertTo-Json -Depth 20 -Compress
+
+    $maxRetries = 5
+    $attempt    = 0
+    $success    = $false
+
+    while (-not $success -and $attempt -lt $maxRetries) {
+        try {
+            # Use Invoke-WebRequest + manual JSON parsing to preserve deeply nested body objects.
+            # Invoke-RestMethod's auto-deserialization can mangle nested sub-response bodies.
+            $webResponse = Invoke-WebRequest -Method POST -Uri $batchUri -Headers $headers -Body $body -ErrorAction Stop
+            # ConvertFrom-Json -Depth requires PS 7.3+; use -Depth when available, else rely on default
+            if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('Depth')) {
+                $parsed = $webResponse.Content | ConvertFrom-Json -Depth 50
+            }
+            else {
+                $parsed = $webResponse.Content | ConvertFrom-Json
+            }
+            $success = $true
+        }
+        catch {
+            $statusCode = $null
+            if ($_.Exception.Response) {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            }
+            if ($statusCode -eq 429 -or $statusCode -eq 503) {
+                $attempt++
+                $retryAfter = 60
+                try { $retryAfter = [int]$_.Exception.Response.Headers.GetValues('Retry-After')[0] } catch { }
+                $waitSeconds = [math]::Min($retryAfter * $attempt, 300)
+                Write-Warning "Graph batch API throttled (HTTP $statusCode). Waiting ${waitSeconds}s before retry $attempt/$maxRetries..."
+                Start-Sleep -Seconds $waitSeconds
+            }
+            else {
+                throw $_
+            }
+        }
+    }
+
+    if (-not $success) {
+        throw "Graph batch API request failed after $maxRetries retries."
+    }
+
+    return $parsed.responses
+}
+
+Export-ModuleMember -Function Get-GraphAccessToken, Get-GraphAccessTokenFromConfig, Get-LogAnalyticsAccessToken, Invoke-GraphRequest, Invoke-GraphBatchRequest

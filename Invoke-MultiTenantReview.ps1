@@ -67,6 +67,10 @@ param(
     [int]   $InactivityThresholdDays  = 0,    # 0 = use config default
     [int]   $LogAnalyticsLookbackDays = 0,    # 0 = use per-tenant config (default 365)
     [switch]$SkipDetailedSignInLogs,
+
+    # Number of appIds per Graph $batch HTTP call for sign-in log queries (1–20, 0 = use config)
+    [int]$SignInBatchSize = 0,
+
     [switch]$IncludeRawJson,
     [switch]$ContinueOnError,
     [switch]$DebugLog,
@@ -100,6 +104,7 @@ if ($ShowHelp) {
     -InactivityThresholdDays <n>          Override inactivity threshold (0 = use config)
     -LogAnalyticsLookbackDays <n>         Override LA lookback (0 = use config)
     -SkipDetailedSignInLogs               No audit log queries for all tenants
+    -SignInBatchSize <n>                   Override appIds per Graph `$batch call (1-20, 0=config)
     -IncludeRawJson                       Also write JSON per tenant
     -ContinueOnError                      Continue on error for remaining tenants
     -DebugLog                             Full transcript logging to report folder
@@ -158,6 +163,7 @@ if ($tenantFiles.Count -eq 0) {
 $globalDefaults = @{
     inactivityThresholdDays         = 180
     signInLookbackDays              = 30
+    signInBatchSize                 = 5
     includeDisabledApps             = $false
     includeManagedIdentities        = $true
     includeFirstPartyMicrosoftApps  = $false
@@ -334,6 +340,9 @@ foreach ($tenant in $tenants) {
             AccessToken             = $accessToken
             ServicePrincipals       = $servicePrincipals
             InactivityThresholdDays = $effectiveInactive
+            SignInBatchSize          = if ($SignInBatchSize -gt 0) { $SignInBatchSize }
+                                       elseif ($ts -and $ts.PSObject.Properties['signInBatchSize']) { [int]$ts.signInBatchSize }
+                                       else { $globalDefaults.signInBatchSize }
         }
 
         # Check whether this tenant has Log Analytics configured

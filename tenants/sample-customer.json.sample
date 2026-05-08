@@ -23,6 +23,7 @@
     "_comment": "Override global defaults for this tenant only. Remove keys to inherit the global default.",
     "inactivityThresholdDays": 180,
     "signInLookbackDays": 30,
+    "signInBatchSize": 5,
     "includeDisabledApps": false,
     "includeManagedIdentities": true,
     "includeFirstPartyMicrosoftApps": false

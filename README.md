@@ -156,7 +156,8 @@ or run `helpers/New-TenantSetup.ps1` to generate one automatically.
   "certificateThumbprint": "AABBCCDDEEFF...",
   "settings": {
     "inactivityThresholdDays": 180,
-    "signInLookbackDays": 30
+    "signInLookbackDays": 30,
+    "signInBatchSize": 5
   },
   "logAnalytics": {
     "enabled": true,
@@ -254,6 +255,7 @@ Multi-tenant runs also produce a `_summary/` folder with a cross-tenant aggregat
 | `-IncludeDisabledApps` | Include disabled service principals | `$false` |
 | `-ExcludeManagedIdentities` | Skip managed identities | `$false` |
 | `-SkipDetailedSignInLogs` | Use `signInActivity` property only | `$false` |
+| `-SignInBatchSize` | AppIds per Graph `$batch` HTTP call (1–20) | `5` |
 | `-IncludeRawJson` | Also write a JSON report file | `$false` |
 | `-DebugLog` | Enable debug transcript logging | `$false` |
 | `-ShowHelp` | Show help manual and exit | `$false` |
@@ -269,6 +271,7 @@ Multi-tenant runs also produce a `_summary/` folder with a cross-tenant aggregat
 | `-InactivityThresholdDays` | Override inactivity threshold | config default |
 | `-LogAnalyticsLookbackDays` | Override Log Analytics lookback | config default |
 | `-SkipDetailedSignInLogs` | Use `signInActivity` property only for all tenants | `$false` |
+| `-SignInBatchSize` | Override appIds per Graph `$batch` HTTP call (1–20, 0 = use config) | `0` |
 | `-IncludeRawJson` | Also write JSON per tenant | `$false` |
 | `-ContinueOnError` | Continue on error for remaining tenants | `$false` |
 | `-DebugLog` | Enable debug transcript logging | `$false` |

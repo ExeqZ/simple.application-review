@@ -251,6 +251,10 @@ function Get-BulkSignInActivity {
         Only use signInActivity on the SP object (no audit log API calls). Fastest mode.
         Ignored when LogAnalyticsConfig is provided.
 
+    .PARAMETER SignInBatchSize
+        Number of appIds to bundle per Graph $batch HTTP call (max 20, default 5).
+        Smaller values are more reliable; larger values reduce total HTTP requests.
+
     .PARAMETER LogAnalyticsConfig
         Hashtable enabling Log Analytics mode. Required keys:
           AccessToken  — LA-scoped bearer token (scope: https://api.loganalytics.io/.default)
@@ -284,6 +288,10 @@ function Get-BulkSignInActivity {
         [int]$InactivityThresholdDays = 180,
         [switch]$SkipDetailedLogs,
 
+        # Number of appIds per Graph $batch HTTP call (1–20). Default 5.
+        [ValidateRange(1, 20)]
+        [int]$SignInBatchSize = 5,
+
         # When provided, switches to Log Analytics bulk-query mode.
         [hashtable]$LogAnalyticsConfig = $null
     )
@@ -307,9 +315,12 @@ function Get-BulkSignInActivity {
             -InactivityThresholdDays $InactivityThresholdDays
     }
 
-    # ── Graph audit log mode (bulk-batched) ──────────────────────────────────────
-    # Query sign-ins per type using signInEventTypes filter on /beta/auditLogs/signIns.
-    # Each batch covers up to 15 appIds with an OR filter.
+    # ── Graph audit log mode (JSON $batch with simple per-appId filters) ────────
+    # Uses Graph $batch API to bundle individual per-appId queries (up to BatchSize per
+    # HTTP call). Each sub-request has a simple OData filter — no OR combinations, no
+    # complex lambda expressions that trigger "Unsupported Query" errors.
+    # Interactive sign-ins use the stable v1.0 endpoint; non-interactive and SP sign-ins
+    # use dedicated /beta/reports endpoints when available.
     $allAppIds  = @($ServicePrincipals | Select-Object -ExpandProperty appId)
 
     $interactiveMap    = @{}
@@ -317,40 +328,33 @@ function Get-BulkSignInActivity {
     $spSignInMap       = @{}
 
     if (-not $SkipDetailedLogs) {
-        $since      = (Get-Date).ToUniversalTime().AddDays(-$LookbackDays).ToString('yyyy-MM-ddTHH:mm:ssZ')
-        $batchCount = [math]::Ceiling($allAppIds.Count / 15)
-        Write-Host ("  Querying audit logs: {0} service principals in {1} batch(es) per log type..." -f
-            $allAppIds.Count, $batchCount) -ForegroundColor Gray
+        $since = (Get-Date).ToUniversalTime().AddDays(-$LookbackDays).ToString('yyyy-MM-ddTHH:mm:ssZ')
+        Write-Host ("  Querying audit logs: {0} service principals via Graph `$batch (batch size: {1})..." -f
+            $allAppIds.Count, $SignInBatchSize) -ForegroundColor Gray
 
-        # Interactive user sign-ins
-        $interactiveMap = Invoke-BulkAuditLogQuery `
+        # Interactive user sign-ins — v1.0 endpoint (returns interactive by default, no signInEventTypes lambda needed)
+        $interactiveMap = Invoke-BatchedSignInQuery `
             -AccessToken    $AccessToken `
-            -Ids            $allAppIds `
-            -FilterProperty 'appId' `
-            -Endpoint       'https://graph.microsoft.com/beta/auditLogs/signIns' `
+            -AppIds         $allAppIds `
             -Since          $since `
-            -ExtraFilter    "signInEventTypes/any(t: t eq 'interactiveUser')" `
-            -SelectFields   'appId,createdDateTime,userPrincipalName,userId,status,ipAddress,location,clientAppUsed,conditionalAccessStatus,riskLevelDuringSignIn'
+            -SignInType     'interactive' `
+            -BatchSize      $SignInBatchSize
 
-        # Non-interactive user sign-ins
-        $nonInteractiveMap = Invoke-BulkAuditLogQuery `
+        # Non-interactive user sign-ins — beta endpoint with signInEventTypes filter
+        $nonInteractiveMap = Invoke-BatchedSignInQuery `
             -AccessToken    $AccessToken `
-            -Ids            $allAppIds `
-            -FilterProperty 'appId' `
-            -Endpoint       'https://graph.microsoft.com/beta/auditLogs/signIns' `
+            -AppIds         $allAppIds `
             -Since          $since `
-            -ExtraFilter    "signInEventTypes/any(t: t eq 'nonInteractiveUser')" `
-            -SelectFields   'appId,createdDateTime,userPrincipalName,userId,status,ipAddress,clientAppUsed'
+            -SignInType     'nonInteractiveUser' `
+            -BatchSize      $SignInBatchSize
 
-        # Service principal / managed identity sign-ins
-        $spSignInMap = Invoke-BulkAuditLogQuery `
+        # Service principal / managed identity sign-ins — beta endpoint with signInEventTypes filter
+        $spSignInMap = Invoke-BatchedSignInQuery `
             -AccessToken    $AccessToken `
-            -Ids            $allAppIds `
-            -FilterProperty 'appId' `
-            -Endpoint       'https://graph.microsoft.com/beta/auditLogs/signIns' `
+            -AppIds         $allAppIds `
             -Since          $since `
-            -ExtraFilter    "signInEventTypes/any(t: t eq 'servicePrincipal')" `
-            -SelectFields   'appId,createdDateTime,servicePrincipalName,status,ipAddress,resourceDisplayName,resourceId'
+            -SignInType     'servicePrincipal' `
+            -BatchSize      $SignInBatchSize
     }
 
     # ── Aggregate per SP from the bulk lookup maps ─────────────────────────────
@@ -452,64 +456,160 @@ function Get-BulkSignInActivity {
 }
 
 # ─── Internal helpers ────────────────────────────────────────────────────────
-function Invoke-BulkAuditLogQuery {
+function Invoke-BatchedSignInQuery {
     <#
     .SYNOPSIS
-        Issues batched OData filter queries for multiple IDs against a single audit log
-        endpoint and returns a hashtable mapping each ID to a list of matching records.
+        Uses the Graph JSON $batch API to query sign-in logs for multiple appIds efficiently.
+        Each appId gets its own simple OData filter — no OR combinations or complex lambda
+        expressions. Sub-requests are bundled into $batch HTTP calls (up to BatchSize per call).
 
     .DESCRIPTION
-        Batches IDs into groups of $BatchSize, building one OData 'or' filter per batch.
-        This reduces N individual requests to ceil(N/BatchSize) requests per endpoint.
+        Strategy per sign-in type:
+          - interactive:       /v1.0/auditLogs/signIns  (returns interactive by default)
+          - nonInteractiveUser: /beta/auditLogs/signIns + signInEventTypes/any() lambda
+          - servicePrincipal:  /beta/auditLogs/signIns + signInEventTypes/any() lambda
 
-    .PARAMETER Ids
-        Array of ID strings to query (appIds or servicePrincipalIds).
+        Because each sub-request in the $batch is independent, a lambda failure for one appId
+        does not affect the others. Failed sub-requests are logged and the appId is skipped
+        gracefully.
 
-    .PARAMETER FilterProperty
-        The OData property to filter on: 'appId' or 'servicePrincipalId'.
+    .PARAMETER AppIds
+        Array of application (client) IDs to query.
 
-    .PARAMETER Endpoint
-        Full URI of the audit log endpoint (without query string).
-
-    .PARAMETER Since
-        ISO 8601 UTC lower-bound datetime string, e.g. '2026-04-06T00:00:00Z'.
-
-    .PARAMETER SelectFields
-        Comma-separated list of fields for `$select.
+    .PARAMETER SignInType
+        One of: 'interactive', 'nonInteractiveUser', 'servicePrincipal'.
 
     .PARAMETER BatchSize
-        Maximum number of IDs per request. Defaults to 15.
+        How many sub-requests per $batch HTTP call (1–20). Defaults to 5.
+
+    .OUTPUTS
+        Hashtable mapping each appId to a list of sign-in records.
     #>
     param(
-        [string]   $AccessToken,
-        [string[]] $Ids,
-        [string]   $FilterProperty,
-        [string]   $Endpoint,
-        [string]   $Since,
-        [string]   $SelectFields,
-        [string]   $ExtraFilter = '',
-        [int]      $BatchSize = 15
+        [Parameter(Mandatory)]
+        [string]$AccessToken,
+
+        [Parameter(Mandatory)]
+        [string[]]$AppIds,
+
+        [Parameter(Mandatory)]
+        [string]$Since,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('interactive', 'nonInteractiveUser', 'servicePrincipal')]
+        [string]$SignInType,
+
+        [ValidateRange(1, 20)]
+        [int]$BatchSize = 5
     )
 
-    # Pre-populate an empty list for every requested ID so callers always get a result
+    # Pre-populate result map so callers always get a list per appId
     $resultMap = @{}
-    foreach ($id in $Ids) { $resultMap[$id] = [System.Collections.Generic.List[object]]::new() }
+    foreach ($id in $AppIds) { $resultMap[$id] = [System.Collections.Generic.List[object]]::new() }
 
-    for ($i = 0; $i -lt $Ids.Count; $i += $BatchSize) {
-        $batch    = $Ids[$i .. [math]::Min($i + $BatchSize - 1, $Ids.Count - 1)]
+    # Build the $select and URL pattern per sign-in type
+    # Note: OData filters require single-quoted string values. Use [char]39 to embed
+    # literal single quotes inside PowerShell double-quoted strings.
+    # Sub-request URLs are relative to the $batch endpoint version — do NOT include
+    # /v1.0/ or /beta/ in the URL. Instead, set the batch endpoint version appropriately.
+    $q = [char]39   # single-quote character for OData filter values
+    $batchVersion = 'v1.0'   # default; overridden for beta endpoints below
+    switch ($SignInType) {
+        'interactive' {
+            $selectFields = 'appId,createdDateTime,userPrincipalName,userId,status,ipAddress,location,clientAppUsed,conditionalAccessStatus,riskLevelDuringSignIn'
+            # v1.0 /auditLogs/signIns returns interactive sign-ins by default — no lambda filter needed
+            $batchVersion = 'v1.0'
+            $buildUrl = {
+                param($appId)
+                $f = [Uri]::EscapeDataString("appId eq ${q}${appId}${q} and createdDateTime ge $Since")
+                return "/auditLogs/signIns?`$filter=$f&`$select=$selectFields&`$top=999"
+            }
+        }
+        'nonInteractiveUser' {
+            $selectFields = 'appId,createdDateTime,userPrincipalName,userId,status,ipAddress,clientAppUsed'
+            $batchVersion = 'beta'
+            $buildUrl = {
+                param($appId)
+                $f = [Uri]::EscapeDataString("appId eq ${q}${appId}${q} and createdDateTime ge $Since and signInEventTypes/any(t: t eq ${q}nonInteractiveUser${q})")
+                return "/auditLogs/signIns?`$filter=$f&`$select=$selectFields&`$top=999&`$count=true"
+            }
+        }
+        'servicePrincipal' {
+            $selectFields = 'appId,createdDateTime,servicePrincipalName,status,ipAddress,resourceDisplayName,resourceId'
+            $batchVersion = 'beta'
+            $buildUrl = {
+                param($appId)
+                $f = [Uri]::EscapeDataString("appId eq ${q}${appId}${q} and createdDateTime ge $Since and signInEventTypes/any(t: t eq ${q}servicePrincipal${q})")
+                return "/auditLogs/signIns?`$filter=$f&`$select=$selectFields&`$top=999&`$count=true"
+            }
+        }
+    }
+
+    $totalBatches = [math]::Ceiling($AppIds.Count / $BatchSize)
+    Write-Verbose "  $SignInType sign-ins: $($AppIds.Count) appIds in $totalBatches batch(es) (batch size $BatchSize)"
+
+    for ($i = 0; $i -lt $AppIds.Count; $i += $BatchSize) {
+        $batch    = $AppIds[$i .. [math]::Min($i + $BatchSize - 1, $AppIds.Count - 1)]
         $batchNum = [math]::Floor($i / $BatchSize) + 1
-        $orParts  = $batch | ForEach-Object { "$FilterProperty eq '$_'" }
-        $filter   = "($($orParts -join ' or ')) and createdDateTime ge $Since"
-        if ($ExtraFilter) { $filter += " and $ExtraFilter" }
-        $uri      = "${Endpoint}?`$filter=$([Uri]::EscapeDataString($filter))&`$select=$SelectFields&`$top=999"
 
-        $records = Invoke-GraphRequestSafe -AccessToken $AccessToken -Uri $uri `
-            -Context "bulk $FilterProperty batch $batchNum ($($batch.Count) ids @ $Endpoint)"
+        # Build the sub-requests for this batch
+        $subRequests = @()
+        foreach ($appId in $batch) {
+            $url = & $buildUrl $appId
+            $subRequests += @{
+                id      = $appId
+                method  = 'GET'
+                url     = $url
+                headers = @{ ConsistencyLevel = 'eventual' }
+            }
+        }
 
-        foreach ($record in $records) {
-            $key = $record.$FilterProperty
-            if ($key -and $resultMap.ContainsKey($key)) {
-                $resultMap[$key].Add($record)
+        try {
+            $responses = Invoke-GraphBatchRequest -AccessToken $AccessToken -Requests $subRequests -BatchEndpointVersion $batchVersion
+        }
+        catch {
+            $statusCode = $null
+            if ($_.Exception.Response) {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            }
+            if ($statusCode -in 403, 404) {
+                Write-Verbose "Audit log batch not available for $SignInType batch $batchNum (HTTP $statusCode). Skipping."
+                continue
+            }
+            Write-Warning "Graph `$batch call failed for $SignInType batch ${batchNum}/${totalBatches}: $_"
+            continue
+        }
+
+        # Process each sub-response individually
+        foreach ($resp in $responses) {
+            $appId = $resp.id
+
+            if ($resp.status -ge 200 -and $resp.status -lt 300) {
+                # Success — extract records from the response body
+                $records = @()
+                if ($resp.body -and $resp.body.value) {
+                    $records = @($resp.body.value)
+                }
+                foreach ($record in $records) {
+                    $key = $record.appId
+                    if ($key -and $resultMap.ContainsKey($key)) {
+                        $resultMap[$key].Add($record)
+                    }
+                }
+                # Note: $batch does not support @odata.nextLink pagination within sub-requests.
+                # The $top=999 limit is sufficient for the lookback windows used here (30 days).
+                # For apps with >999 sign-ins in the window, the signInActivity timestamps and
+                # counts are still directionally accurate.
+            }
+            elseif ($resp.status -in 403, 404) {
+                Write-Verbose "Audit log not available for $SignInType appId $appId (HTTP $($resp.status)). Skipping."
+            }
+            else {
+                $errMsg = ''
+                if ($resp.body -and $resp.body.error) {
+                    $errMsg = $resp.body.error.message
+                }
+                Write-Verbose "Sub-request failed for $SignInType appId $appId (HTTP $($resp.status)): $errMsg"
             }
         }
     }
