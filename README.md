@@ -45,7 +45,23 @@ No external PowerShell modules are required. Everything uses native `Invoke-Rest
 
 ## App Registration Setup
 
-Register **one app per tenant** (or one multi-tenant app with admin consent in each customer tenant).
+Two models are supported:
+
+| Model | Description | Best for |
+|---|---|---|
+| **Multi-tenant app** (recommended) | One app in your home tenant, admin-consented into each customer tenant | MSPs managing many tenants |
+| **Per-tenant app** | Separate app registration in each customer tenant | Full isolation per customer |
+
+### Multi-Tenant App (Recommended)
+
+1. Register **one app** in your service provider tenant with "Accounts in any organizational directory" (multi-tenant)
+2. Add the required permissions (below) and grant admin consent in your home tenant
+3. For each customer, grant admin consent via:
+   ```
+   https://login.microsoftonline.com/{customer-tenant-id}/adminconsent?client_id={your-app-client-id}
+   ```
+4. Create `config/auth-defaults.json` (copy from `config/auth-defaults.json.sample`) with the shared `clientId` and certificate
+5. Tenant config files (`tenants/*.json`) only need `tenantId`, `tenantName`, and `enabled` — auth is inherited from the global config
 
 ### Required Application Permissions
 
@@ -140,11 +156,41 @@ To query sign-in history beyond the Graph audit log retention window:
 
 ## Configuration
 
+### Global auth defaults (`config/auth-defaults.json`)
+
+For multi-tenant app deployments, define authentication once in a global config file.
+All tenant configs inherit these values unless they provide their own overrides.
+
+Copy `config/auth-defaults.json.sample` → `config/auth-defaults.json` and fill in your values:
+
+```json
+{
+  "authMethod": "Certificate",
+  "clientId": "bbbbbbbb-0000-0000-0000-000000000001",
+  "certificatePath": "./secrets/multi-tenant-app.pfx",
+  "certificatePasswordFile": "./secrets/multi-tenant-app.pfx.pass"
+}
+```
+
+When `config/auth-defaults.json` exists, tenant configs only need tenant-specific fields:
+
+```json
+{
+  "tenantId": "aaaaaaaa-0000-0000-0000-000000000001",
+  "tenantName": "Customer A — Contoso Ltd",
+  "enabled": true
+}
+```
+
+> **Precedence:** Per-tenant values always win. If a tenant config specifies `clientId` or `authMethod`, those override the global defaults.
+
 ### Tenant config files (`tenants/*.json`)
 
 Each customer has its own JSON file in the `tenants/` folder. Files matching `*.json` are
 **gitignored** — never commit them. Use `tenants/sample-customer.json.sample` as a starting point,
 or run `helpers/New-TenantSetup.ps1` to generate one automatically.
+
+Full per-tenant config (with auth override):
 
 ```json
 {

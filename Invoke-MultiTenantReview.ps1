@@ -169,12 +169,37 @@ $globalDefaults = @{
     includeFirstPartyMicrosoftApps  = $false
 }
 
+# ── Load global auth defaults (multi-tenant app support) ─────────────────────
+$authDefaultsPath = Join-Path $PSScriptRoot 'config' 'auth-defaults.json'
+$globalAuth = $null
+if (Test-Path $authDefaultsPath) {
+    try {
+        $globalAuth = Get-Content $authDefaultsPath -Raw | ConvertFrom-Json
+        Write-Verbose "Loaded global auth defaults from $authDefaultsPath (clientId: $($globalAuth.clientId))"
+    }
+    catch {
+        Write-Warning "Failed to parse config/auth-defaults.json: $_"
+    }
+}
+
 # Load all tenant objects
 $allTenantConfigs = foreach ($file in $tenantFiles) {
     try {
         $t = Get-Content $file.FullName -Raw | ConvertFrom-Json
         # Attach source file path for diagnostics
         $t | Add-Member -NotePropertyName '_sourceFile' -NotePropertyValue $file.FullName -Force
+
+        # Merge global auth defaults into tenant config where fields are missing
+        if ($globalAuth) {
+            $authFields = @('authMethod', 'clientId', 'certificateThumbprint', 'certificatePath', 'certificatePasswordFile', 'clientSecretFile')
+            foreach ($field in $authFields) {
+                if ((-not $t.PSObject.Properties[$field] -or [string]::IsNullOrWhiteSpace($t.$field)) `
+                    -and $globalAuth.PSObject.Properties[$field] -and -not [string]::IsNullOrWhiteSpace($globalAuth.$field)) {
+                    $t | Add-Member -NotePropertyName $field -NotePropertyValue $globalAuth.$field -Force
+                }
+            }
+        }
+
         $t
     }
     catch {
@@ -202,6 +227,9 @@ $globalInactive  = if ($InactivityThresholdDays -gt 0) { $InactivityThresholdDay
 Write-Host "`n=== Multi-Tenant Application Review ===" -ForegroundColor Cyan
 Write-Host "  Tenants folder : $TenantsFolder"
 Write-Host "  Tenant files   : $($tenantFiles.Count) found, $($tenants.Count) enabled"
+if ($globalAuth) {
+    Write-Host "  Global auth    : clientId=$($globalAuth.clientId) ($($globalAuth.authMethod))" -ForegroundColor Gray
+}
 Write-Host "  Lookback       : $globalLookback days (default)"
 Write-Host "  Inactivity     : $globalInactive days (default)"
 Write-Host "  Output         : $OutputFolder`n"

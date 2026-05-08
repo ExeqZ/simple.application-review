@@ -1,22 +1,20 @@
 {
   "_comment": "Rename this file to <customer-shortname>.json (e.g. contoso.json) and fill in your values.",
-  "_authMethods": {
-    "Certificate": "Use a certificate — most secure, recommended for production. Either certificateThumbprint (cert store) or certificatePath (PFX file).",
-    "ClientSecret": "Use a client secret stored in a file. Restrict file permissions (600)."
-  },
+  "_authNote": "Auth fields (authMethod, clientId, certificate*, clientSecretFile) are OPTIONAL if config/auth-defaults.json exists. Omit them to inherit global auth (multi-tenant app). Specify them here to override per-tenant.",
   "tenantId": "aaaaaaaa-0000-0000-0000-000000000001",
   "tenantName": "Customer Name - Company Ltd",
   "enabled": true,
 
-  "authMethod": "Certificate",
-  "clientId": "bbbbbbbb-0000-0000-0000-000000000001",
+  "_perTenantAuthOverride": "Uncomment below ONLY if this tenant uses a different app registration than the global default:",
+  "authMethod": "",
+  "clientId": "",
 
-  "_certificateOptions": "Use ONE of the following certificate options:",
+  "_certificateOptions": "Use ONE of the following certificate options (only needed for per-tenant override):",
   "certificateThumbprint": "",
   "certificatePath": "",
   "certificatePasswordFile": "",
 
-  "_clientSecretOption": "Only required when authMethod=ClientSecret:",
+  "_clientSecretOption": "Only required when authMethod=ClientSecret (per-tenant override):",
   "clientSecretFile": "",
 
   "settings": {

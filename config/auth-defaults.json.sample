@@ -1,0 +1,15 @@
+{
+  "_comment": "Global authentication defaults for multi-tenant app. Copy to auth-defaults.json and fill in values. Individual tenant configs inherit these unless they define their own auth fields.",
+  "_usage": "Register one multi-tenant app in your service provider tenant, then grant admin consent in each customer tenant via: https://login.microsoftonline.com/{customer-tenant-id}/adminconsent?client_id={clientId}",
+
+  "authMethod": "Certificate",
+  "clientId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+
+  "_certificateOptions": "Use ONE of the following certificate options:",
+  "certificateThumbprint": "",
+  "certificatePath": "./secrets/multi-tenant-app.pfx",
+  "certificatePasswordFile": "./secrets/multi-tenant-app.pfx.pass",
+
+  "_clientSecretOption": "Only required when authMethod=ClientSecret:",
+  "clientSecretFile": ""
+}

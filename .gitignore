@@ -12,6 +12,9 @@ secrets/
 # Tenant config files (contain secrets/IDs — gitignored; use sample as template)
 tenants/*.json
 
+# Global auth defaults (contains clientId / cert paths)
+config/auth-defaults.json
+
 # OS
 .DS_Store
 Thumbs.db
