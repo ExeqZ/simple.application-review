@@ -292,6 +292,10 @@ function Get-BulkSignInActivity {
         [ValidateRange(1, 20)]
         [int]$SignInBatchSize = 5,
 
+        # Optional scriptblock that returns a fresh access token when invoked.
+        # Passed through to Invoke-BatchedSignInQuery for proactive token renewal.
+        [scriptblock]$TokenRefreshScript = $null,
+
         # When provided, switches to Log Analytics bulk-query mode.
         [hashtable]$LogAnalyticsConfig = $null
     )
@@ -333,28 +337,32 @@ function Get-BulkSignInActivity {
             $allAppIds.Count, $SignInBatchSize) -ForegroundColor Gray
 
         # Interactive user sign-ins — v1.0 endpoint (returns interactive by default, no signInEventTypes lambda needed)
-        $interactiveMap = Invoke-BatchedSignInQuery `
-            -AccessToken    $AccessToken `
-            -AppIds         $allAppIds `
-            -Since          $since `
-            -SignInType     'interactive' `
-            -BatchSize      $SignInBatchSize
+        $batchQueryParams = @{
+            AccessToken        = $AccessToken
+            AppIds             = $allAppIds
+            Since              = $since
+            BatchSize          = $SignInBatchSize
+        }
+        if ($TokenRefreshScript) { $batchQueryParams['TokenRefreshScript'] = $TokenRefreshScript }
+
+        $interactiveMap = Invoke-BatchedSignInQuery @batchQueryParams -SignInType 'interactive'
+
+        # Pick up a potentially refreshed token from the last batch run
+        if ($TokenRefreshScript -and (Test-TokenExpiringSoon -AccessToken $AccessToken)) {
+            $AccessToken = & $TokenRefreshScript
+            $batchQueryParams['AccessToken'] = $AccessToken
+        }
 
         # Non-interactive user sign-ins — beta endpoint with signInEventTypes filter
-        $nonInteractiveMap = Invoke-BatchedSignInQuery `
-            -AccessToken    $AccessToken `
-            -AppIds         $allAppIds `
-            -Since          $since `
-            -SignInType     'nonInteractiveUser' `
-            -BatchSize      $SignInBatchSize
+        $batchQueryParams['AccessToken'] = $AccessToken
+        $nonInteractiveMap = Invoke-BatchedSignInQuery @batchQueryParams -SignInType 'nonInteractiveUser'
 
         # Service principal / managed identity sign-ins — beta endpoint with signInEventTypes filter
-        $spSignInMap = Invoke-BatchedSignInQuery `
-            -AccessToken    $AccessToken `
-            -AppIds         $allAppIds `
-            -Since          $since `
-            -SignInType     'servicePrincipal' `
-            -BatchSize      $SignInBatchSize
+        if ($TokenRefreshScript -and (Test-TokenExpiringSoon -AccessToken $AccessToken)) {
+            $AccessToken = & $TokenRefreshScript
+            $batchQueryParams['AccessToken'] = $AccessToken
+        }
+        $spSignInMap = Invoke-BatchedSignInQuery @batchQueryParams -SignInType 'servicePrincipal'
     }
 
     # ── Aggregate per SP from the bulk lookup maps ─────────────────────────────
@@ -500,7 +508,11 @@ function Invoke-BatchedSignInQuery {
         [string]$SignInType,
 
         [ValidateRange(1, 20)]
-        [int]$BatchSize = 5
+        [int]$BatchSize = 5,
+
+        # Optional scriptblock that returns a fresh access token when invoked.
+        # Called proactively before each batch when the current token is near expiry.
+        [scriptblock]$TokenRefreshScript = $null
     )
 
     # Pre-populate result map so callers always get a list per appId
@@ -551,6 +563,13 @@ function Invoke-BatchedSignInQuery {
     for ($i = 0; $i -lt $AppIds.Count; $i += $BatchSize) {
         $batch    = $AppIds[$i .. [math]::Min($i + $BatchSize - 1, $AppIds.Count - 1)]
         $batchNum = [math]::Floor($i / $BatchSize) + 1
+
+        # Proactively refresh token before it expires (5-minute margin)
+        if ($TokenRefreshScript -and (Test-TokenExpiringSoon -AccessToken $AccessToken)) {
+            Write-Verbose "Access token expiring soon — refreshing before $SignInType batch ${batchNum}/${totalBatches}..."
+            $AccessToken = & $TokenRefreshScript
+            Write-Verbose "Token refreshed successfully."
+        }
 
         # Build the sub-requests for this batch
         $subRequests = @()

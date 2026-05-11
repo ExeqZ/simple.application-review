@@ -560,4 +560,67 @@ function Invoke-GraphBatchRequest {
     return $parsed.responses
 }
 
-Export-ModuleMember -Function Get-GraphAccessToken, Get-GraphAccessTokenFromConfig, Get-LogAnalyticsAccessToken, Invoke-GraphRequest, Invoke-GraphBatchRequest
+function Get-TokenExpiryUtc {
+    <#
+    .SYNOPSIS
+        Decodes the 'exp' claim from a JWT access token and returns the expiry as a
+        [datetime] in UTC. Returns $null if the token cannot be parsed.
+    #>
+    [CmdletBinding()]
+    [OutputType([Nullable[datetime]])]
+    param(
+        [Parameter(Mandatory)]
+        [string]$AccessToken
+    )
+
+    try {
+        $parts = $AccessToken.Split('.')
+        if ($parts.Count -lt 2) { return $null }
+
+        # Base64url → standard Base64
+        $payload = $parts[1].Replace('-', '+').Replace('_', '/')
+        switch ($payload.Length % 4) {
+            2 { $payload += '==' }
+            3 { $payload += '='  }
+        }
+
+        $json    = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload))
+        $claims  = $json | ConvertFrom-Json
+        if (-not $claims.exp) { return $null }
+
+        return ([DateTimeOffset]::FromUnixTimeSeconds([long]$claims.exp)).UtcDateTime
+    }
+    catch {
+        Write-Verbose "Could not decode token expiry: $_"
+        return $null
+    }
+}
+
+function Test-TokenExpiringSoon {
+    <#
+    .SYNOPSIS
+        Returns $true when the access token expires within the specified margin.
+    .PARAMETER AccessToken
+        JWT bearer token.
+    .PARAMETER MarginSeconds
+        How many seconds before actual expiry to consider the token "expiring soon".
+        Defaults to 300 (5 minutes).
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)]
+        [string]$AccessToken,
+
+        [int]$MarginSeconds = 300
+    )
+
+    $expiry = Get-TokenExpiryUtc -AccessToken $AccessToken
+    if (-not $expiry) {
+        # Cannot determine expiry — assume it is still valid to avoid unnecessary refreshes
+        return $false
+    }
+    return ([datetime]::UtcNow.AddSeconds($MarginSeconds) -ge $expiry)
+}
+
+Export-ModuleMember -Function Get-GraphAccessToken, Get-GraphAccessTokenFromConfig, Get-LogAnalyticsAccessToken, Invoke-GraphRequest, Invoke-GraphBatchRequest, Get-TokenExpiryUtc, Test-TokenExpiringSoon

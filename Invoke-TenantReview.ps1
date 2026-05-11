@@ -374,6 +374,64 @@ catch {
 
 Write-Host "  Tenant: $tenantName ($tenantGuid)"
 
+# ── Build token refresh scriptblock ───────────────────────────────────────────
+# Used by batch operations to proactively renew the token before it expires.
+if ($NoEnterpriseAuth) {
+    $tokenRefreshScript = {
+        $result = Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com' -ErrorAction Stop
+        if ($result.Token -is [securestring]) {
+            return ConvertFrom-SecureString $result.Token -AsPlainText
+        }
+        return $result.Token
+    }
+}
+else {
+    # Capture credential parameters in a closure so the scriptblock can re-acquire tokens
+    $refreshTokenParams = @{ TenantId = $TenantId; ClientId = $ClientId }
+    switch ($PSCmdlet.ParameterSetName) {
+        'Secret' {
+            # Re-read is not possible (cleared), but original $tokenParams still holds the SecureString
+            $refreshTokenParams['ClientSecret'] = $tokenParams['ClientSecret']
+        }
+        'SecretFile' {
+            $refreshTokenParams['ClientSecretFile'] = $ClientSecretFile
+        }
+        'CertThumbprint' {
+            $refreshTokenParams['CertificateThumbprint'] = $CertificateThumbprint
+        }
+        'CertFile' {
+            $refreshTokenParams['CertificatePath'] = $CertificatePath
+            if ($CertificatePasswordFile) {
+                $refreshTokenParams['CertificatePasswordFile'] = $CertificatePasswordFile
+            }
+        }
+    }
+    $tokenRefreshScript = {
+        $p = @{ TenantId = $refreshTokenParams.TenantId; ClientId = $refreshTokenParams.ClientId }
+        if ($refreshTokenParams.ContainsKey('ClientSecret')) {
+            $p['ClientSecret'] = $refreshTokenParams['ClientSecret']
+        }
+        elseif ($refreshTokenParams.ContainsKey('ClientSecretFile')) {
+            $secretPlain = (Get-Content $refreshTokenParams['ClientSecretFile'] -Raw).Trim()
+            $p['ClientSecret'] = ConvertTo-SecureString $secretPlain -AsPlainText -Force
+            $secretPlain = $null
+        }
+        elseif ($refreshTokenParams.ContainsKey('CertificateThumbprint')) {
+            $p['CertificateThumbprint'] = $refreshTokenParams['CertificateThumbprint']
+        }
+        elseif ($refreshTokenParams.ContainsKey('CertificatePath')) {
+            $p['CertificatePath'] = $refreshTokenParams['CertificatePath']
+            if ($refreshTokenParams.ContainsKey('CertificatePasswordFile') -and
+                (Test-Path $refreshTokenParams['CertificatePasswordFile'])) {
+                $passPlain = (Get-Content $refreshTokenParams['CertificatePasswordFile'] -Raw).Trim()
+                $p['CertificatePassword'] = ConvertTo-SecureString $passPlain -AsPlainText -Force
+                $passPlain = $null
+            }
+        }
+        return Get-GraphAccessToken @p
+    }.GetNewClosure()
+}
+
 # ── Enumerate applications ────────────────────────────────────────────────────
 Write-Host "`n[2/6] Enumerating applications..." -ForegroundColor Yellow
 Clear-ServicePrincipalCache
@@ -422,6 +480,7 @@ $signInParams = @{
     ServicePrincipals       = $servicePrincipals
     InactivityThresholdDays = $InactivityThresholdDays
     SignInBatchSize          = $SignInBatchSize
+    TokenRefreshScript       = $tokenRefreshScript
 }
 
 if ($LogAnalyticsWorkspaceId) {

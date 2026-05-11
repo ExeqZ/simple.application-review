@@ -364,10 +364,17 @@ foreach ($tenant in $tenants) {
         Write-Progress -Id 1 -Activity "[$tenantIndex] Permissions" -Completed
 
         # ── Sign-in activity ──────────────────────────────────────────────────
+        # Build a token refresh scriptblock scoped to this tenant's config
+        $currentTenant = $tenant
+        $tenantTokenRefreshScript = {
+            return Get-GraphAccessTokenFromConfig -TenantConfig $currentTenant
+        }.GetNewClosure()
+
         $signInParams = @{
             AccessToken             = $accessToken
             ServicePrincipals       = $servicePrincipals
             InactivityThresholdDays = $effectiveInactive
+            TokenRefreshScript       = $tenantTokenRefreshScript
             SignInBatchSize          = if ($SignInBatchSize -gt 0) { $SignInBatchSize }
                                        elseif ($ts -and $ts.PSObject.Properties['signInBatchSize']) { [int]$ts.signInBatchSize }
                                        else { $globalDefaults.signInBatchSize }
