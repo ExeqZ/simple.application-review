@@ -257,14 +257,16 @@ function Build-HtmlReport {
     )
 
     $generated = Get-Date -Format 'yyyy-MM-dd HH:mm UTC'
-    $totalApps = $Results.Count
-    $inactive  = @($Results | Where-Object { $_.IsInactive }).Count
-    $high      = @($Results | Where-Object { $_.OverallRiskLevel -eq 'High'     }).Count
-    $medium    = @($Results | Where-Object { $_.OverallRiskLevel -eq 'Medium'   }).Count
-    $low       = @($Results | Where-Object { $_.OverallRiskLevel -eq 'Low'      }).Count
-    $scimApps  = @($Results | Where-Object { $_.IsScimApp }).Count
+    $totalApps  = $Results.Count
+    $eaCount    = @($Results | Where-Object { $_.PrincipalType -ne 'ManagedIdentity' }).Count
+    $miCount    = @($Results | Where-Object { $_.PrincipalType -eq 'ManagedIdentity' }).Count
+    $inactive   = @($Results | Where-Object { $_.IsInactive }).Count
+    $high       = @($Results | Where-Object { $_.OverallRiskLevel -eq 'High'     }).Count
+    $medium     = @($Results | Where-Object { $_.OverallRiskLevel -eq 'Medium'   }).Count
+    $low        = @($Results | Where-Object { $_.OverallRiskLevel -eq 'Low'      }).Count
+    $scimApps   = @($Results | Where-Object { $_.IsScimApp }).Count
     $likelyUnused = @($Results | Where-Object { $_.IsLikelyUnused }).Count
-    $overpriv  = @($Results | Where-Object { $_.IsOverprivileged }).Count
+    $overpriv   = @($Results | Where-Object { $_.IsOverprivileged }).Count
     $highlyPriv = @($Results | Where-Object { $_.IsHighlyPrivileged }).Count
 
     $tableRows = ($Results | Sort-Object { @{'High'=0;'Medium'=1;'Low'=2;'None'=3}[$_.OverallRiskLevel] }, DisplayName | ForEach-Object {
@@ -344,11 +346,18 @@ function Build-HtmlReport {
   .days-inactive { color: var(--clr-inactive); }
   details summary { cursor: pointer; font-size: 0.72rem; color: #3b82f6; }
   details summary:hover { text-decoration: underline; }
-  .filter-bar { padding: 0 32px 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .filter-bar { padding: 0 32px 12px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .filter-group { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .filter-group-label { font-size: 0.68rem; font-weight: 600; color: #9ca3af; text-transform: uppercase; letter-spacing:.04em; margin-right: 2px; }
   .filter-btn { padding: 5px 14px; border-radius: 6px; border: 1px solid #d1d5db;
-                background: #fff; cursor: pointer; font-size: 0.75rem; color: #374151; }
+                background: #fff; cursor: pointer; font-size: 0.75rem; color: #374151; transition: all .12s; }
+  .filter-btn:hover { border-color: #9ca3af; }
   .filter-btn.active { background: #1e3a5f; color: #fff; border-color: #1e3a5f; }
-  .filter-sep { color: #d1d5db; font-size: 0.9rem; }
+  .filter-sep { color: #e5e7eb; width: 1px; height: 24px; background: #e5e7eb; margin: 0 2px; align-self: center; }
+  .filter-reset { padding: 5px 10px; border-radius: 6px; border: 1px dashed #d1d5db;
+                  background: #f9fafb; cursor: pointer; font-size: 0.72rem; color: #6b7280; }
+  .filter-reset:hover { background: #fee2e2; border-color: #fca5a5; color: #b91c1c; }
+  .filter-count { font-size: 0.68rem; color: #6b7280; margin-left: 2px; }
   .app-link { color: #2563eb; text-decoration: none; font-size: 0.68rem; }
   .app-link:hover { text-decoration: underline; }
   @media print { .filter-bar { display: none; } }
@@ -363,6 +372,8 @@ function Build-HtmlReport {
 
 <div class="summary">
   <div class="card"><div class="num">$totalApps</div><div class="lbl">Total Applications</div></div>
+  <div class="card" style="border-left:4px solid #1e40af"><div class="num" style="color:#1e40af">$eaCount</div><div class="lbl">Enterprise Apps</div></div>
+  <div class="card" style="border-left:4px solid #5b21b6"><div class="num" style="color:#5b21b6">$miCount</div><div class="lbl">Managed Identities</div></div>
   <div class="card high"><div class="num">$high</div><div class="lbl">High Risk</div></div>
   <div class="card medium"><div class="num">$medium</div><div class="lbl">Medium Risk</div></div>
   <div class="card low"><div class="num">$low</div><div class="lbl">Low Risk</div></div>
@@ -373,21 +384,37 @@ function Build-HtmlReport {
   <div class="card" style="border-left:4px solid #1e40af"><div class="num" style="color:#1e40af">$scimApps</div><div class="lbl">SCIM / Provisioning</div></div>
 </div>
 
-<div class="filter-bar">
-  <span style="font-size:0.72rem;font-weight:600;color:#6b7280;margin-right:4px">FILTER:</span>
-  <button class="filter-btn active" onclick="filterRows('all',this)">All</button>
-  <button class="filter-btn" onclick="filterRows('High',this)">High Risk</button>
-  <button class="filter-btn" onclick="filterRows('Medium',this)">Medium Risk</button>
-  <button class="filter-btn" onclick="filterRows('Low',this)">Low Risk</button>
-  <span class="filter-sep">|</span>
-  <button class="filter-btn" onclick="filterRows('inactive',this)">Inactive</button>
-  <button class="filter-btn" onclick="filterRows('unused',this)">Likely Unused</button>
-  <button class="filter-btn" onclick="filterRows('overpriv',this)">Overprivileged</button>
-  <button class="filter-btn" onclick="filterRows('highlyprivileged',this)">Highly Privileged</button>
-  <button class="filter-btn" onclick="filterRows('scim',this)">SCIM</button>
-  <span class="filter-sep">|</span>
-  <button class="filter-btn" onclick="filterRows('consent-admin',this)">Admin Consent</button>
-  <button class="filter-btn" onclick="filterRows('consent-user',this)">User Consent</button>
+<div class="filter-bar" id="filterBar">
+  <div class="filter-group">
+    <span class="filter-group-label">Type</span>
+    <button class="filter-btn" data-filter="type" data-value="EA" onclick="toggleFilter(this)">Enterprise Apps</button>
+    <button class="filter-btn" data-filter="type" data-value="MI" onclick="toggleFilter(this)">Managed Identities</button>
+  </div>
+  <div class="filter-sep"></div>
+  <div class="filter-group">
+    <span class="filter-group-label">Risk</span>
+    <button class="filter-btn" data-filter="risk" data-value="High" onclick="toggleFilter(this)">High</button>
+    <button class="filter-btn" data-filter="risk" data-value="Medium" onclick="toggleFilter(this)">Medium</button>
+    <button class="filter-btn" data-filter="risk" data-value="Low" onclick="toggleFilter(this)">Low</button>
+  </div>
+  <div class="filter-sep"></div>
+  <div class="filter-group">
+    <span class="filter-group-label">Flags</span>
+    <button class="filter-btn" data-filter="inactive" data-value="true" onclick="toggleFilter(this)">Inactive</button>
+    <button class="filter-btn" data-filter="unused" data-value="true" onclick="toggleFilter(this)">Likely Unused</button>
+    <button class="filter-btn" data-filter="overpriv" data-value="true" onclick="toggleFilter(this)">Overprivileged</button>
+    <button class="filter-btn" data-filter="highlyprivileged" data-value="true" onclick="toggleFilter(this)">Highly Privileged</button>
+    <button class="filter-btn" data-filter="scim" data-value="true" onclick="toggleFilter(this)">SCIM</button>
+  </div>
+  <div class="filter-sep"></div>
+  <div class="filter-group">
+    <span class="filter-group-label">Consent</span>
+    <button class="filter-btn" data-filter="consent" data-value="Admin|Both" onclick="toggleFilter(this)">Admin Consent</button>
+    <button class="filter-btn" data-filter="consent" data-value="User|Both" onclick="toggleFilter(this)">User Consent</button>
+  </div>
+  <div class="filter-sep"></div>
+  <button class="filter-reset" onclick="resetFilters()">&#x2715; Clear filters</button>
+  <span class="filter-count" id="filterCount"></span>
 </div>
 
 <p class="section-title">Application Details <span style="font-weight:400;text-transform:none">(click column headers to sort)</span></p>
@@ -417,21 +444,52 @@ $tableRows
 </div>
 
 <script>
-function filterRows(level, btn) {
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
+// activeFilters: map of filterKey -> Set of accepted values
+// Within a group (same data-filter), buttons are OR-combined.
+// Across groups, conditions are AND-combined.
+const activeFilters = {};
+
+function toggleFilter(btn) {
+  const key = btn.dataset.filter;
+  const val = btn.dataset.value;
+  if (!activeFilters[key]) activeFilters[key] = new Set();
+  if (btn.classList.contains('active')) {
+    btn.classList.remove('active');
+    activeFilters[key].delete(val);
+    if (activeFilters[key].size === 0) delete activeFilters[key];
+  } else {
+    btn.classList.add('active');
+    activeFilters[key].add(val);
+  }
+  applyFilters();
+}
+
+function resetFilters() {
+  Object.keys(activeFilters).forEach(k => delete activeFilters[k]);
+  document.querySelectorAll('.filter-btn.active').forEach(b => b.classList.remove('active'));
+  applyFilters();
+}
+
+function applyFilters() {
+  const keys = Object.keys(activeFilters);
   const rows = document.querySelectorAll('#mainTable tbody tr');
+  let visible = 0;
   rows.forEach(r => {
-    if (level === 'all') { r.style.display = ''; return; }
-    if (level === 'inactive')   { r.style.display = r.dataset.inactive === 'true' ? '' : 'none'; return; }
-    if (level === 'unused')     { r.style.display = r.dataset.unused   === 'true' ? '' : 'none'; return; }
-    if (level === 'overpriv')   { r.style.display = r.dataset.overpriv === 'true' ? '' : 'none'; return; }
-    if (level === 'highlyprivileged') { r.style.display = r.dataset.highlyprivileged === 'true' ? '' : 'none'; return; }
-    if (level === 'scim')       { r.style.display = r.dataset.scim     === 'true' ? '' : 'none'; return; }
-    if (level === 'consent-admin') { r.style.display = (r.dataset.consent === 'Admin' || r.dataset.consent === 'Both') ? '' : 'none'; return; }
-    if (level === 'consent-user')  { r.style.display = (r.dataset.consent === 'User'  || r.dataset.consent === 'Both') ? '' : 'none'; return; }
-    r.style.display = r.dataset.risk === level ? '' : 'none';
+    const show = keys.every(key => {
+      const accepted = activeFilters[key];
+      const cell = r.dataset[key] || '';
+      // Each accepted value may be a pipe-separated pattern (e.g. "Admin|Both")
+      return Array.from(accepted).some(pattern => pattern.split('|').some(v => v === cell));
+    });
+    r.style.display = show ? '' : 'none';
+    if (show) visible++;
   });
+  const countEl = document.getElementById('filterCount');
+  if (keys.length > 0) {
+    countEl.textContent = visible + ' of ' + rows.length + ' shown';
+  } else {
+    countEl.textContent = '';
+  }
 }
 
 function sortTable(colIdx, th) {
@@ -569,13 +627,14 @@ function Build-HtmlTableRow {
     $isOverp  = if ($Row.IsOverprivileged) { 'true' } else { 'false' }
     $isHiPriv = if ($Row.IsHighlyPrivileged) { 'true' } else { 'false' }
     $isScim   = if ($Row.IsScimApp) { 'true' } else { 'false' }
+    $typeKey  = if ($Row.PrincipalType -eq 'ManagedIdentity') { 'MI' } else { 'EA' }
     $rowClass = if ($Row.IsLikelyUnused) { 'row-unused' } else { '' }
 
     # Direct link to Entra portal
     $entraLink = "https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ManagedAppMenuBlade/~/Overview/objectId/$objId/appId/$appId"
 
     return @"
-<tr class="$rowClass" data-risk="$($Row.OverallRiskLevel)" data-inactive="$isInact" data-unused="$isUnused" data-overpriv="$isOverp" data-highlyprivileged="$isHiPriv" data-scim="$isScim" data-consent="$($Row.ConsentType)">
+<tr class="$rowClass" data-risk="$($Row.OverallRiskLevel)" data-inactive="$isInact" data-unused="$isUnused" data-overpriv="$isOverp" data-highlyprivileged="$isHiPriv" data-scim="$isScim" data-consent="$($Row.ConsentType)" data-type="$typeKey">
   <td data-val="$name">
     <strong>$name</strong><br>
     <span style="font-size:0.68rem;color:#9ca3af">$appId</span><br>
