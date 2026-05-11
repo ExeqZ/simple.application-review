@@ -41,6 +41,8 @@ Get-Help .\Invoke-MultiTenantReview.ps1 -Full
 
 No external PowerShell modules are required. Everything uses native `Invoke-RestMethod`.
 
+> **Exception:** When using `-NoEnterpriseAuth`, the **Az.Accounts** module is required (`Install-Module Az.Accounts -Scope CurrentUser`).
+
 ---
 
 ## App Registration Setup
@@ -89,6 +91,10 @@ To query sign-in history beyond the Graph audit log retention window:
 
 1. **Certificate** — Store in the Windows cert store or provide a PFX file. Most secure.
 2. **Client Secret** — Store in a file with restricted permissions. Never hard-code it.
+3. **No Enterprise App (`-NoEnterpriseAuth`)** — Use an existing interactive Az session. No app registration needed.
+   - Install `Az.Accounts`: `Install-Module Az.Accounts -Scope CurrentUser`
+   - Sign in: `Connect-AzAccount -TenantId '<your-tenant-id>'`
+   - Your user account must hold at least the **Global Reader** Entra ID directory role (or an equivalent role that grants delegated `Application.Read.All`, `Directory.Read.All`, and `AuditLog.Read.All`).
 
 ---
 
@@ -131,6 +137,16 @@ To query sign-in history beyond the Graph audit log retention window:
     -ClientId    'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' `
     -CertificateThumbprint 'AABB...' `
     -DebugLog
+
+# No enterprise app — use existing Az session
+Connect-AzAccount -TenantId 'contoso.onmicrosoft.com'
+.\Invoke-TenantReview.ps1 -NoEnterpriseAuth
+
+# No enterprise app — with explicit options
+Connect-AzAccount -TenantId 'contoso.onmicrosoft.com'
+.\Invoke-TenantReview.ps1 -NoEnterpriseAuth `
+    -SkipDetailedSignInLogs `
+    -OutputFolder './reports'
 ```
 
 ### Multiple Tenants (MSP Mode)
@@ -304,6 +320,7 @@ Multi-tenant runs also produce a `_summary/` folder with a cross-tenant aggregat
 | `-SignInBatchSize` | AppIds per Graph `$batch` HTTP call (1–20) | `5` |
 | `-IncludeRawJson` | Also write a JSON report file | `$false` |
 | `-DebugLog` | Enable debug transcript logging | `$false` |
+| `-NoEnterpriseAuth` | Use existing Az PowerShell session instead of enterprise app auth | `$false` |
 | `-ShowHelp` | Show help manual and exit | `$false` |
 
 ### `Invoke-MultiTenantReview.ps1`

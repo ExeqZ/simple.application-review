@@ -70,6 +70,21 @@
 .PARAMETER IncludeRawJson
     Also write a raw JSON file containing the full result set.
 
+.PARAMETER NoEnterpriseAuth
+    Skips enterprise app authentication entirely. The script will use an existing
+    Azure PowerShell session instead (Az.Accounts module). You must run
+    Connect-AzAccount before invoking this script.
+
+    Required manual steps before running with -NoEnterpriseAuth:
+      1. Install the Az.Accounts module:  Install-Module Az.Accounts -Scope CurrentUser
+      2. Sign in interactively:           Connect-AzAccount -TenantId '<your-tenant-id>'
+      3. Ensure your user account has at least the Global Reader (or equivalent) Entra ID
+         directory role so that the delegated permissions Application.Read.All,
+         Directory.Read.All, and AuditLog.Read.All are effective.
+
+    When -NoEnterpriseAuth is used, -ClientId is not required. -TenantId is optional;
+    if omitted, the tenant is detected from the active Az session.
+
 .PARAMETER DebugLog
     Enables debug mode. Starts a PowerShell transcript that captures all console output,
     verbose messages, and detailed step-by-step logging to a file in the report folder.
@@ -93,6 +108,16 @@
     .\Invoke-TenantReview.ps1 -TenantId 'contoso.onmicrosoft.com' -ClientId 'xxxxxxxx' `
         -CertificateThumbprint 'AABB...' -DebugLog
 
+.EXAMPLE
+    # No enterprise app — use existing Az session
+    Connect-AzAccount -TenantId 'contoso.onmicrosoft.com'
+    .\Invoke-TenantReview.ps1 -NoEnterpriseAuth
+
+.EXAMPLE
+    # No enterprise app — explicit tenant ID
+    Connect-AzAccount -TenantId 'contoso.onmicrosoft.com'
+    .\Invoke-TenantReview.ps1 -NoEnterpriseAuth -TenantId 'contoso.onmicrosoft.com'
+
 .NOTES
     Required app permissions: Application.Read.All, Directory.Read.All, AuditLog.Read.All
     (AuditLog.Read.All can be omitted with -SkipDetailedSignInLogs)
@@ -103,6 +128,7 @@ param(
     [Parameter(Mandatory, ParameterSetName = 'SecretFile')]
     [Parameter(Mandatory, ParameterSetName = 'CertThumbprint')]
     [Parameter(Mandatory, ParameterSetName = 'CertFile')]
+    [Parameter(ParameterSetName = 'NoEnterpriseAuth')]
     [string]$TenantId,
 
     [Parameter(Mandatory, ParameterSetName = 'Secret')]
@@ -146,6 +172,10 @@ param(
 
     [switch]$IncludeRawJson,
     [switch]$DebugLog,
+
+    [Parameter(Mandatory, ParameterSetName = 'NoEnterpriseAuth')]
+    [switch]$NoEnterpriseAuth,
+
     [switch]$ShowHelp
 )
 
@@ -174,6 +204,7 @@ if ($ShowHelp) {
     -CertificatePath <pfx> [-CertificatePasswordFile <file>]   PFX file
     -ClientSecretFile <file>              File containing client secret
     -ClientSecret <string>                Plain text secret (not recommended)
+    -NoEnterpriseAuth                     Use existing Az PowerShell session (no app needed)
 
   OPTIONS
     -OutputFolder <path>                  Report output folder (default: ./reports)
@@ -187,6 +218,7 @@ if ($ShowHelp) {
     -SkipDetailedSignInLogs               No audit log queries (fast, no P1 needed)
     -SignInBatchSize <n>                   AppIds per Graph `$batch call (1-20, default: 5)
     -IncludeRawJson                       Also write JSON report
+    -NoEnterpriseAuth                     Use existing Az session (no enterprise app)
     -DebugLog                             Full transcript logging to report folder
     -ShowHelp                             Show this help and exit
 
@@ -199,14 +231,25 @@ if ($ShowHelp) {
     .\Invoke-TenantReview.ps1 -TenantId contoso.onmicrosoft.com ``
         -ClientId xxxxxxxx -ClientSecretFile ./secrets/contoso.secret
 
+    # No enterprise app — use existing Az session
+    Connect-AzAccount -TenantId contoso.onmicrosoft.com
+    .\Invoke-TenantReview.ps1 -NoEnterpriseAuth
+
     # Debug mode
     .\Invoke-TenantReview.ps1 -TenantId contoso.onmicrosoft.com ``
         -ClientId xxxxxxxx -CertificateThumbprint AABB... -DebugLog
 
-  REQUIRED APP PERMISSIONS
+  REQUIRED APP PERMISSIONS (enterprise app mode)
     Application.Read.All     Enumerate service principals
     Directory.Read.All       Resolve SP metadata
     AuditLog.Read.All        Detailed sign-in logs (optional, skip with -SkipDetailedSignInLogs)
+
+  MANUAL AUTH PREREQUISITES (-NoEnterpriseAuth)
+    1. Install-Module Az.Accounts -Scope CurrentUser
+    2. Connect-AzAccount -TenantId '<your-tenant-id>'
+    3. Your user account must have the Global Reader (or equivalent) Entra ID role
+       so that delegated Application.Read.All, Directory.Read.All, and
+       AuditLog.Read.All permissions are effective.
 
   OUTPUT
     reports/<TenantName>_<timestamp>/application-review.html   Filterable & sortable HTML
@@ -219,7 +262,7 @@ if ($ShowHelp) {
 }
 
 # ── Validate required params when not using -ShowHelp ─────────────────────────
-if (-not $TenantId -or -not $ClientId) {
+if (-not $NoEnterpriseAuth -and (-not $TenantId -or -not $ClientId)) {
     Write-Host "ERROR: -TenantId and -ClientId are required. Use -ShowHelp to see usage." -ForegroundColor Red
     return
 }
@@ -249,7 +292,7 @@ Import-Module (Join-Path $moduleRoot 'SignIns.psm1')        -Force
 Import-Module (Join-Path $moduleRoot 'LogAnalytics.psm1')   -Force
 Import-Module (Join-Path $moduleRoot 'Reporting.psm1')      -Force
 
-Write-Host "`n=== Application Review — Tenant: $TenantId ===" -ForegroundColor Cyan
+Write-Host "`n=== Application Review — Tenant: $($TenantId ?? '(detecting from session)') ===" -ForegroundColor Cyan
 
 if ($DebugLog) { Write-Verbose "[DEBUG] Starting review for tenant: $TenantId at $(Get-Date -Format 'o')" }
 
@@ -257,37 +300,59 @@ if ($DebugLog) { Write-Verbose "[DEBUG] Starting review for tenant: $TenantId at
 Write-Host "`n[1/6] Authenticating..." -ForegroundColor Yellow
 if ($DebugLog) { Write-Verbose "[DEBUG] Auth method: $($PSCmdlet.ParameterSetName)" }
 
-$tokenParams = @{ TenantId = $TenantId; ClientId = $ClientId }
-
-switch ($PSCmdlet.ParameterSetName) {
-    'Secret' {
-        $tokenParams['ClientSecret'] = ConvertTo-SecureString $ClientSecret -AsPlainText -Force
-        $ClientSecret = $null  # clear plain text immediately
+if ($NoEnterpriseAuth) {
+    # ── Manual auth via Az.Accounts ────────────────────────────────────────────
+    Write-Host "  Using existing Az PowerShell session (no enterprise app)..." -ForegroundColor Gray
+    if (-not (Get-Command 'Get-AzAccessToken' -ErrorAction SilentlyContinue)) {
+        throw "Az.Accounts module not found. Install it with: Install-Module Az.Accounts -Scope CurrentUser"
     }
-    'SecretFile' {
-        if (-not (Test-Path $ClientSecretFile)) {
-            throw "Secret file not found: $ClientSecretFile"
-        }
-        $secretPlain = (Get-Content $ClientSecretFile -Raw).Trim()
-        $tokenParams['ClientSecret'] = ConvertTo-SecureString $secretPlain -AsPlainText -Force
-        $secretPlain = $null
+    $azContext = Get-AzContext
+    if (-not $azContext) {
+        throw "No active Az session. Run 'Connect-AzAccount -TenantId <your-tenant-id>' first."
     }
-    'CertThumbprint' {
-        $tokenParams['CertificateThumbprint'] = $CertificateThumbprint
+    if (-not $TenantId) {
+        $TenantId = $azContext.Tenant.Id
+        Write-Host "  Detected tenant from Az session: $TenantId" -ForegroundColor Gray
     }
-    'CertFile' {
-        $tokenParams['CertificatePath'] = $CertificatePath
-        if ($CertificatePasswordFile -and (Test-Path $CertificatePasswordFile)) {
-            $passPlain = (Get-Content $CertificatePasswordFile -Raw).Trim()
-            $tokenParams['CertificatePassword'] = ConvertTo-SecureString $passPlain -AsPlainText -Force
-            $passPlain = $null
-        }
-    }
+    $tokenResult = Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com' -ErrorAction Stop
+    $accessToken = $tokenResult.Token
+    Write-Host "  Authentication successful (Az session — $($azContext.Account.Id))." -ForegroundColor Green
+    if ($DebugLog) { Write-Verbose "[DEBUG] Access token acquired from Az session for account $($azContext.Account.Id)" }
 }
+else {
+    # ── Enterprise app authentication ─────────────────────────────────────────
+    $tokenParams = @{ TenantId = $TenantId; ClientId = $ClientId }
 
-$accessToken = Get-GraphAccessToken @tokenParams
-Write-Host "  Authentication successful." -ForegroundColor Green
-if ($DebugLog) { Write-Verbose "[DEBUG] Access token acquired successfully" }
+    switch ($PSCmdlet.ParameterSetName) {
+        'Secret' {
+            $tokenParams['ClientSecret'] = ConvertTo-SecureString $ClientSecret -AsPlainText -Force
+            $ClientSecret = $null  # clear plain text immediately
+        }
+        'SecretFile' {
+            if (-not (Test-Path $ClientSecretFile)) {
+                throw "Secret file not found: $ClientSecretFile"
+            }
+            $secretPlain = (Get-Content $ClientSecretFile -Raw).Trim()
+            $tokenParams['ClientSecret'] = ConvertTo-SecureString $secretPlain -AsPlainText -Force
+            $secretPlain = $null
+        }
+        'CertThumbprint' {
+            $tokenParams['CertificateThumbprint'] = $CertificateThumbprint
+        }
+        'CertFile' {
+            $tokenParams['CertificatePath'] = $CertificatePath
+            if ($CertificatePasswordFile -and (Test-Path $CertificatePasswordFile)) {
+                $passPlain = (Get-Content $CertificatePasswordFile -Raw).Trim()
+                $tokenParams['CertificatePassword'] = ConvertTo-SecureString $passPlain -AsPlainText -Force
+                $passPlain = $null
+            }
+        }
+    }
+
+    $accessToken = Get-GraphAccessToken @tokenParams
+    Write-Host "  Authentication successful." -ForegroundColor Green
+    if ($DebugLog) { Write-Verbose "[DEBUG] Access token acquired successfully" }
+}
 
 # ── Resolve tenant display name ───────────────────────────────────────────────
 try {
@@ -358,26 +423,33 @@ if ($LogAnalyticsWorkspaceId) {
     # ── Log Analytics mode ────────────────────────────────────────────────────
     Write-Host "  Acquiring Log Analytics token..." -ForegroundColor Gray
     try {
-        $laToken = Get-LogAnalyticsAccessToken -TenantId $tenantGuid -ClientId $ClientId
-        # Reuse credential params already resolved above by passing through the same param set
-        # (certificate or secret) — reconstruct from PSBoundParameters
-        $credParams = @{ TenantId = $tenantGuid; ClientId = $ClientId }
-        switch ($PSCmdlet.ParameterSetName) {
-            'Secret'         { $credParams['ClientSecret']          = ConvertTo-SecureString $ClientSecret -AsPlainText -Force }
-            'SecretFile'     {
-                $credParams['ClientSecret'] = ConvertTo-SecureString `
-                    ((Get-Content $ClientSecretFile -Raw).Trim()) -AsPlainText -Force
-            }
-            'CertThumbprint' { $credParams['CertificateThumbprint'] = $CertificateThumbprint }
-            'CertFile'       {
-                $credParams['CertificatePath'] = $CertificatePath
-                if ($CertificatePasswordFile -and (Test-Path $CertificatePasswordFile)) {
-                    $credParams['CertificatePassword'] = ConvertTo-SecureString `
-                        ((Get-Content $CertificatePasswordFile -Raw).Trim()) -AsPlainText -Force
+        if ($NoEnterpriseAuth) {
+            # Get Log Analytics token from existing Az session
+            $laTokenResult = Get-AzAccessToken -ResourceUrl 'https://api.loganalytics.io' -ErrorAction Stop
+            $laToken = $laTokenResult.Token
+        }
+        else {
+            $laToken = Get-LogAnalyticsAccessToken -TenantId $tenantGuid -ClientId $ClientId
+            # Reuse credential params already resolved above by passing through the same param set
+            # (certificate or secret) — reconstruct from PSBoundParameters
+            $credParams = @{ TenantId = $tenantGuid; ClientId = $ClientId }
+            switch ($PSCmdlet.ParameterSetName) {
+                'Secret'         { $credParams['ClientSecret']          = ConvertTo-SecureString $ClientSecret -AsPlainText -Force }
+                'SecretFile'     {
+                    $credParams['ClientSecret'] = ConvertTo-SecureString `
+                        ((Get-Content $ClientSecretFile -Raw).Trim()) -AsPlainText -Force
+                }
+                'CertThumbprint' { $credParams['CertificateThumbprint'] = $CertificateThumbprint }
+                'CertFile'       {
+                    $credParams['CertificatePath'] = $CertificatePath
+                    if ($CertificatePasswordFile -and (Test-Path $CertificatePasswordFile)) {
+                        $credParams['CertificatePassword'] = ConvertTo-SecureString `
+                            ((Get-Content $CertificatePasswordFile -Raw).Trim()) -AsPlainText -Force
+                    }
                 }
             }
+            $laToken = Get-GraphAccessToken @credParams -Scope 'https://api.loganalytics.io/.default'
         }
-        $laToken = Get-GraphAccessToken @credParams -Scope 'https://api.loganalytics.io/.default'
 
         # Optional connectivity check
         Write-Host "  Verifying Log Analytics workspace connectivity..." -ForegroundColor Gray
