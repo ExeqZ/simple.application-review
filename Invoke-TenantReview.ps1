@@ -315,7 +315,12 @@ if ($NoEnterpriseAuth) {
         Write-Host "  Detected tenant from Az session: $TenantId" -ForegroundColor Gray
     }
     $tokenResult = Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com' -ErrorAction Stop
-    $accessToken = $tokenResult.Token
+    # Az.Accounts >=2.13 returns Token as SecureString; older versions return plain text
+    if ($tokenResult.Token -is [securestring]) {
+        $accessToken = ConvertFrom-SecureString $tokenResult.Token -AsPlainText
+    } else {
+        $accessToken = $tokenResult.Token
+    }
     Write-Host "  Authentication successful (Az session — $($azContext.Account.Id))." -ForegroundColor Green
     if ($DebugLog) { Write-Verbose "[DEBUG] Access token acquired from Az session for account $($azContext.Account.Id)" }
 }
@@ -426,7 +431,11 @@ if ($LogAnalyticsWorkspaceId) {
         if ($NoEnterpriseAuth) {
             # Get Log Analytics token from existing Az session
             $laTokenResult = Get-AzAccessToken -ResourceUrl 'https://api.loganalytics.io' -ErrorAction Stop
-            $laToken = $laTokenResult.Token
+            if ($laTokenResult.Token -is [securestring]) {
+                $laToken = ConvertFrom-SecureString $laTokenResult.Token -AsPlainText
+            } else {
+                $laToken = $laTokenResult.Token
+            }
         }
         else {
             $laToken = Get-LogAnalyticsAccessToken -TenantId $tenantGuid -ClientId $ClientId
