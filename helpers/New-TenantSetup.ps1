@@ -118,6 +118,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# ── Minimum PowerShell version check ─────────────────────────────────────────
+if ($PSVersionTable.PSVersion -lt [Version]'7.2') {
+    Write-Host "ERROR: PowerShell 7.2 or higher is required. Current version: $($PSVersionTable.PSVersion)" -ForegroundColor Red
+    Write-Host "Download PowerShell 7: https://aka.ms/powershell"
+    exit 1
+}
+
 # ── Resolve output folder ─────────────────────────────────────────────────────
 if (-not $OutputFolder) {
     # Default: repository root (parent of helpers/)
@@ -254,6 +261,22 @@ if (-not (Get-Command Get-MgContext -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
+# Verify minimum module version — v2.x is required for -OutputType PSObject and current parameter sets
+$minGraphVersion = [Version]'2.0.0'
+$mgModule = Get-Module -ListAvailable -Name 'Microsoft.Graph.Authentication' |
+    Sort-Object Version -Descending | Select-Object -First 1
+if ($mgModule -and $mgModule.Version -lt $minGraphVersion) {
+    Write-Host ""
+    Write-Host "  ERROR: Microsoft.Graph module version $($mgModule.Version) is too old (minimum: $minGraphVersion)." -ForegroundColor Red
+    Write-Host "  The installed version is missing required parameters and may cause unexpected errors." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Update it with:" -ForegroundColor Yellow
+    Write-Host "    Update-Module Microsoft.Graph"
+    Write-Host ""
+    exit 1
+}
+Write-Host "  Microsoft.Graph module : v$($mgModule.Version)" -ForegroundColor Green
+
 $mgContext = Get-MgContext
 if (-not $mgContext) {
     Write-Host ""
@@ -322,7 +345,7 @@ Write-Host "[3/5] Creating app registration '$appName'..." -ForegroundColor Yell
 $existingApps = Invoke-MgGraphRequest -Method GET `
     -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=displayName eq '$appName'&`$select=id,appId" `
     -OutputType PSObject
-if ($existingApps.value.Count -gt 0) {
+if (@($existingApps.value).Count -gt 0) {
     $existingAppId  = $existingApps.value[0].appId
     $existingObjId  = $existingApps.value[0].id
     Write-Host ""
