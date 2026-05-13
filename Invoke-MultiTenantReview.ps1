@@ -426,6 +426,13 @@ foreach ($tenant in $tenants) {
         # ── SCIM detection ────────────────────────────────────────────────────
         $scimStatus = Get-BulkScimStatus -AccessToken $accessToken -ServicePrincipals $servicePrincipals
 
+        # ── Credential & owner analysis ───────────────────────────────────────
+        $appRegDetails = Get-ApplicationRegistrationDetails -AccessToken $accessToken
+        $credentialMap = $appRegDetails.Credentials
+        $ownerMap      = $appRegDetails.Owners
+        $expiredCount  = @($credentialMap.Values | Where-Object { $_.HasAnyExpired }).Count
+        Write-Host "  Credentials: $($credentialMap.Count) app registrations, $expiredCount with expired credentials."
+
         # ── Combine ───────────────────────────────────────────────────────────
         $signInLookup = @{}
         foreach ($sia in $signInResults) { $signInLookup[$sia.ServicePrincipalId] = $sia }
@@ -444,13 +451,18 @@ foreach ($tenant in $tenants) {
                     DistinctSpCallers = @(); DistinctSpCallerCount = 0; AuditLogsQueried = $false
                 }
             }
-            $isScim = if ($scimStatus.ContainsKey($pr.ServicePrincipal.id)) { $scimStatus[$pr.ServicePrincipal.id] } else { $false }
+            $isScim     = if ($scimStatus.ContainsKey($pr.ServicePrincipal.id)) { $scimStatus[$pr.ServicePrincipal.id] } else { $false }
+            $appId      = $pr.ServicePrincipal.appId
+            $credStatus = if ($credentialMap.ContainsKey($appId)) { $credentialMap[$appId] } else { $null }
+            $owners     = if ($ownerMap.ContainsKey($appId)) { $ownerMap[$appId] } else { @() }
             Build-CombinedResult `
                 -ServicePrincipal  $pr.ServicePrincipal `
                 -PermissionData    $pr.PermissionData `
                 -PermissionSummary $pr.PermissionSummary `
                 -SignInActivity     $sia `
-                -IsScimApp          $isScim
+                -IsScimApp          $isScim `
+                -CredentialStatus   $credStatus `
+                -Owners             $owners
         }
 
         # ── Report ────────────────────────────────────────────────────────────

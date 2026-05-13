@@ -116,14 +116,27 @@ function Build-CombinedResult {
         [Parameter(Mandatory)] [object]$PermissionData,
         [Parameter(Mandatory)] [object]$PermissionSummary,
         [Parameter(Mandatory)] [object]$SignInActivity,
-        [bool]$IsScimApp = $false
+        [bool]$IsScimApp = $false,
+        [object]$CredentialStatus = $null,
+        [string[]]$Owners = @()
     )
 
     # Determine if app is likely unused and candidate for deletion:
     # Inactive + no sign-ins in window + created > 90 days ago
     $createdDate = $null
     if ($ServicePrincipal.createdDateTime) {
-        try { $createdDate = [datetime]::Parse($ServicePrincipal.createdDateTime) } catch {}
+        try {
+            if ($ServicePrincipal.createdDateTime -is [datetime]) {
+                $createdDate = $ServicePrincipal.createdDateTime.ToUniversalTime()
+            } else {
+                $createdDate = [datetime]::Parse(
+                    $ServicePrincipal.createdDateTime.ToString(),
+                    [System.Globalization.CultureInfo]::InvariantCulture,
+                    [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor
+                    [System.Globalization.DateTimeStyles]::AssumeUniversal
+                )
+            }
+        } catch {}
     }
     $daysSinceCreated = if ($createdDate) {
         [int]((Get-Date).ToUniversalTime() - $createdDate).TotalDays
@@ -170,6 +183,18 @@ function Build-CombinedResult {
 
         # SCIM
         IsScimApp                     = $IsScimApp
+
+        # Credentials
+        HasExpiredSecrets             = if ($CredentialStatus) { $CredentialStatus.HasExpiredSecrets } else { $false }
+        HasExpiredCerts               = if ($CredentialStatus) { $CredentialStatus.HasExpiredCerts } else { $false }
+        HasExpiredCredentials          = if ($CredentialStatus) { $CredentialStatus.HasAnyExpired } else { $false }
+        TotalCredentials              = if ($CredentialStatus) { $CredentialStatus.TotalCredentials } else { 0 }
+        EarliestCredentialExpiry      = if ($CredentialStatus) { $CredentialStatus.EarliestExpiry } else { $null }
+        _credentialDetails            = $CredentialStatus
+
+        # Owners
+        Owners                        = ($Owners -join '; ')
+        OwnerCount                    = $Owners.Count
 
         # Likely unused / deletion candidate
         IsLikelyUnused                = $isLikelyUnused
@@ -227,6 +252,10 @@ function ConvertTo-FlatCsvRow {
         UserConsentedCount            = $Row.UserConsentedCount
         AdminConsented                = $Row.AdminConsented
         IsScimApp                     = $Row.IsScimApp
+        HasExpiredCredentials          = $Row.HasExpiredCredentials
+        TotalCredentials              = $Row.TotalCredentials
+        EarliestCredentialExpiry      = if ($Row.EarliestCredentialExpiry) { $Row.EarliestCredentialExpiry.ToString('o') } else { '' }
+        Owners                        = if ($Row.Owners) { $Row.Owners } else { '' }
         IsLikelyUnused                = $Row.IsLikelyUnused
         LastSeenOverall               = if ($Row.LastSeenOverall) { $Row.LastSeenOverall.ToString('o') } else { '' }
         DaysSinceLastSignIn           = $Row.DaysSinceLastSignIn
@@ -256,7 +285,7 @@ function Build-HtmlReport {
         [string]$TenantId
     )
 
-    $generated = Get-Date -Format 'yyyy-MM-dd HH:mm UTC'
+    $generated = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm')
     $totalApps  = $Results.Count
     $eaCount    = @($Results | Where-Object { $_.PrincipalType -ne 'ManagedIdentity' }).Count
     $miCount    = @($Results | Where-Object { $_.PrincipalType -eq 'ManagedIdentity' }).Count
@@ -268,6 +297,7 @@ function Build-HtmlReport {
     $likelyUnused = @($Results | Where-Object { $_.IsLikelyUnused }).Count
     $overpriv   = @($Results | Where-Object { $_.IsOverprivileged }).Count
     $highlyPriv = @($Results | Where-Object { $_.IsHighlyPrivileged }).Count
+    $expiredCreds = @($Results | Where-Object { $_.HasExpiredCredentials }).Count
 
     $tableRows = ($Results | Sort-Object { @{'High'=0;'Medium'=1;'Low'=2;'None'=3}[$_.OverallRiskLevel] }, DisplayName | ForEach-Object {
         Build-HtmlTableRow $_ $TenantId
@@ -336,6 +366,7 @@ function Build-HtmlReport {
   .badge-highlyprivileged { color: #9a3412; background: #fff7ed; }
   .badge-consent-admin { color: #065f46; background: #d1fae5; }
   .badge-consent-user  { color: #92400e; background: #fef3c7; }
+  .badge-expired       { color: #991b1b; background: #fee2e2; }
   .inactive-label { color: var(--clr-inactive); font-style: italic; }
   .perms-list { font-size: 0.7rem; color: #374151; }
   .perm-high     { color: var(--clr-high); font-weight: 600; }
@@ -382,6 +413,7 @@ function Build-HtmlReport {
   <div class="card" style="border-left:4px solid #991b1b"><div class="num" style="color:#991b1b">$overpriv</div><div class="lbl">Overprivileged</div></div>
   <div class="card" style="border-left:4px solid #9a3412"><div class="num" style="color:#9a3412">$highlyPriv</div><div class="lbl">Highly Privileged</div></div>
   <div class="card" style="border-left:4px solid #1e40af"><div class="num" style="color:#1e40af">$scimApps</div><div class="lbl">SCIM / Provisioning</div></div>
+  <div class="card" style="border-left:4px solid #dc2626"><div class="num" style="color:#dc2626">$expiredCreds</div><div class="lbl">Expired Credentials</div></div>
 </div>
 
 <div class="filter-bar" id="filterBar">
@@ -405,6 +437,7 @@ function Build-HtmlReport {
     <button class="filter-btn" data-filter="overpriv" data-value="true" onclick="toggleFilter(this)">Overprivileged</button>
     <button class="filter-btn" data-filter="highlyprivileged" data-value="true" onclick="toggleFilter(this)">Highly Privileged</button>
     <button class="filter-btn" data-filter="scim" data-value="true" onclick="toggleFilter(this)">SCIM</button>
+    <button class="filter-btn" data-filter="expired" data-value="true" onclick="toggleFilter(this)">Expired Credentials</button>
   </div>
   <div class="filter-sep"></div>
   <div class="filter-group">
@@ -533,6 +566,16 @@ function sortTable(colIdx, th) {
 
   rows.forEach(r => tbody.appendChild(r));
 }
+
+// Toggle show more / show less labels in permission details
+document.addEventListener('toggle', function(e) {
+  if (e.target.tagName === 'DETAILS') {
+    var s = e.target.querySelector('summary');
+    if (s && s.dataset.label) {
+      s.textContent = e.target.open ? 'Show less' : s.dataset.label;
+    }
+  }
+}, true);
 </script>
 </body>
 </html>
@@ -560,6 +603,8 @@ function Build-HtmlTableRow {
         $flagsHtml += "<span class='badge badge-highlyprivileged' title='Has High severity permissions'>Highly Privileged</span>"
     }
     if ($Row.IsScimApp)           { $flagsHtml += "<span class='badge badge-scim'>SCIM</span>" }
+    if ($Row.HasExpiredSecrets)    { $flagsHtml += "<span class='badge badge-expired' title='One or more client secrets have expired'>Expired Secret</span>" }
+    if ($Row.HasExpiredCerts)      { $flagsHtml += "<span class='badge badge-expired' title='One or more certificates have expired'>Expired Cert</span>" }
     $flagsCell = if ($flagsHtml.Count -gt 0) { $flagsHtml -join '<br>' } else { '<span style="color:#9ca3af">&mdash;</span>' }
 
     # Build permission list showing ALL permissions (not just sensitive)
@@ -578,8 +623,8 @@ function Build-HtmlTableRow {
         $preview  = ($permLines | Select-Object -First 5) -join '<br>'
         $remaining = $allPerms.Count - 5
         if ($remaining -gt 0) {
-            $fullList = $permLines -join '<br>'
-            $permHtml  = "<div class='perms-list'>$preview<br><details><summary>+$remaining more</summary><div>$fullList</div></details></div>"
+            $restList = ($permLines | Select-Object -Skip 5) -join '<br>'
+            $permHtml  = "<div class='perms-list'>$preview<br><details><summary data-label='+$remaining more'>+$remaining more</summary><div>$restList</div></details></div>"
         }
         else {
             $permHtml = "<div class='perms-list'>$preview</div>"
@@ -627,17 +672,23 @@ function Build-HtmlTableRow {
     $isOverp  = if ($Row.IsOverprivileged) { 'true' } else { 'false' }
     $isHiPriv = if ($Row.IsHighlyPrivileged) { 'true' } else { 'false' }
     $isScim   = if ($Row.IsScimApp) { 'true' } else { 'false' }
+    $isExpired = if ($Row.HasExpiredCredentials) { 'true' } else { 'false' }
     $typeKey  = if ($Row.PrincipalType -eq 'ManagedIdentity') { 'MI' } else { 'EA' }
     $rowClass = if ($Row.IsLikelyUnused) { 'row-unused' } else { '' }
+
+    # Owner line for the application cell
+    $ownerHtml = if ($Row.Owners) {
+        "<br><span style='font-size:0.68rem;color:#6b7280'>Owner: $([System.Net.WebUtility]::HtmlEncode($Row.Owners))</span>"
+    } else { '' }
 
     # Direct link to Entra portal
     $entraLink = "https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ManagedAppMenuBlade/~/Overview/objectId/$objId/appId/$appId"
 
     return @"
-<tr class="$rowClass" data-risk="$($Row.OverallRiskLevel)" data-inactive="$isInact" data-unused="$isUnused" data-overpriv="$isOverp" data-highlyprivileged="$isHiPriv" data-scim="$isScim" data-consent="$($Row.ConsentType)" data-type="$typeKey">
+<tr class="$rowClass" data-risk="$($Row.OverallRiskLevel)" data-inactive="$isInact" data-unused="$isUnused" data-overpriv="$isOverp" data-highlyprivileged="$isHiPriv" data-scim="$isScim" data-expired="$isExpired" data-consent="$($Row.ConsentType)" data-type="$typeKey">
   <td data-val="$name">
     <strong>$name</strong><br>
-    <span style="font-size:0.68rem;color:#9ca3af">$appId</span><br>
+    <span style="font-size:0.68rem;color:#9ca3af">$appId</span>$ownerHtml<br>
     <a href="$entraLink" target="_blank" rel="noopener" class="app-link">Open in Entra &#8599;</a>
   </td>
   <td>$typeBadge</td>

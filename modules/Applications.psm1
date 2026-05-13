@@ -317,5 +317,147 @@ function Get-BulkScimStatus {
     return $result
 }
 
+function Get-ApplicationRegistrationDetails {
+    <#
+    .SYNOPSIS
+        Bulk-fetches all application registrations with their credential expiry info and owners.
+
+    .DESCRIPTION
+        Queries the /applications endpoint for passwordCredentials, keyCredentials, and owners.
+        Returns two lookup hashtables keyed by appId: one for credential status (expired
+        secrets/certificates) and one for owner display names.
+
+    .PARAMETER AccessToken
+        Bearer access token with Application.Read.All.
+
+    .OUTPUTS
+        PSCustomObject with Credentials (hashtable appId → status) and Owners (hashtable appId → string[]).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$AccessToken
+    )
+
+    Write-Verbose "Fetching application registrations for credential and owner analysis..."
+
+    $uri = "https://graph.microsoft.com/v1.0/applications" +
+           "?`$select=appId,passwordCredentials,keyCredentials" +
+           "&`$expand=owners(`$select=id,displayName,userPrincipalName)" +
+           "&`$top=999"
+
+    try {
+        $apps = Invoke-GraphRequest -AccessToken $AccessToken -Uri $uri -All
+    }
+    catch {
+        # $expand=owners may fail on some tenants; retry without expand
+        Write-Warning "Could not fetch applications with owners, retrying without owner data: $_"
+        $uri = "https://graph.microsoft.com/v1.0/applications" +
+               "?`$select=appId,passwordCredentials,keyCredentials" +
+               "&`$top=999"
+        $apps = Invoke-GraphRequest -AccessToken $AccessToken -Uri $uri -All
+    }
+
+    $credentialMap = @{}
+    $ownerMap      = @{}
+    $now           = [datetime]::UtcNow
+
+    foreach ($app in $apps) {
+        # ── Credentials ───────────────────────────────────────────────────────
+        $secrets           = [System.Collections.Generic.List[object]]::new()
+        $certs             = [System.Collections.Generic.List[object]]::new()
+        $hasExpiredSecrets  = $false
+        $hasExpiredCerts    = $false
+        $earliestExpiry     = $null
+
+        foreach ($pwd in @($app.passwordCredentials)) {
+            if (-not $pwd) { continue }
+            $endDate = $null
+            if ($pwd.endDateTime) {
+                try {
+                    $endDate = if ($pwd.endDateTime -is [datetime]) {
+                        $pwd.endDateTime.ToUniversalTime()
+                    } else {
+                        [datetime]::Parse(
+                            $pwd.endDateTime.ToString(),
+                            [System.Globalization.CultureInfo]::InvariantCulture,
+                            [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor
+                            [System.Globalization.DateTimeStyles]::AssumeUniversal
+                        )
+                    }
+                } catch {}
+            }
+            $isExpired = $endDate -and $endDate -lt $now
+            if ($isExpired) { $hasExpiredSecrets = $true }
+            if ($endDate -and (-not $earliestExpiry -or $endDate -lt $earliestExpiry)) {
+                $earliestExpiry = $endDate
+            }
+            $secrets.Add([PSCustomObject]@{
+                DisplayName = $pwd.displayName
+                EndDateTime = $endDate
+                IsExpired   = $isExpired
+            })
+        }
+
+        foreach ($key in @($app.keyCredentials)) {
+            if (-not $key) { continue }
+            $endDate = $null
+            if ($key.endDateTime) {
+                try {
+                    $endDate = if ($key.endDateTime -is [datetime]) {
+                        $key.endDateTime.ToUniversalTime()
+                    } else {
+                        [datetime]::Parse(
+                            $key.endDateTime.ToString(),
+                            [System.Globalization.CultureInfo]::InvariantCulture,
+                            [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor
+                            [System.Globalization.DateTimeStyles]::AssumeUniversal
+                        )
+                    }
+                } catch {}
+            }
+            $isExpired = $endDate -and $endDate -lt $now
+            if ($isExpired) { $hasExpiredCerts = $true }
+            if ($endDate -and (-not $earliestExpiry -or $endDate -lt $earliestExpiry)) {
+                $earliestExpiry = $endDate
+            }
+            $certs.Add([PSCustomObject]@{
+                DisplayName = $key.displayName
+                EndDateTime = $endDate
+                IsExpired   = $isExpired
+                Type        = $key.type
+            })
+        }
+
+        $credentialMap[$app.appId] = [PSCustomObject]@{
+            Secrets           = $secrets
+            Certificates      = $certs
+            HasExpiredSecrets = $hasExpiredSecrets
+            HasExpiredCerts   = $hasExpiredCerts
+            HasAnyExpired     = $hasExpiredSecrets -or $hasExpiredCerts
+            TotalCredentials  = $secrets.Count + $certs.Count
+            EarliestExpiry    = $earliestExpiry
+        }
+
+        # ── Owners ────────────────────────────────────────────────────────────
+        $ownerList = @()
+        if ($app.owners) {
+            $ownerList = @($app.owners | ForEach-Object {
+                if ($_.userPrincipalName) { $_.userPrincipalName }
+                elseif ($_.displayName) { $_.displayName }
+                else { $_.id }
+            })
+        }
+        $ownerMap[$app.appId] = $ownerList
+    }
+
+    Write-Verbose "Processed $(@($apps).Count) application registrations."
+    return [PSCustomObject]@{
+        Credentials = $credentialMap
+        Owners      = $ownerMap
+    }
+}
+
 Export-ModuleMember -Function Get-EnterpriseApplications, Get-ManagedIdentities, Get-AllApplications,
-    Get-ServicePrincipalById, Clear-ServicePrincipalCache, Test-ScimProvisioning, Get-BulkScimStatus
+    Get-ServicePrincipalById, Clear-ServicePrincipalCache, Test-ScimProvisioning, Get-BulkScimStatus,
+    Get-ApplicationRegistrationDetails

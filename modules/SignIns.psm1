@@ -665,8 +665,22 @@ function Invoke-GraphRequestSafe {
 
 function Parse-NullableDate {
     param([object]$Value)
-    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace($Value)) { return $null }
-    try { return [datetime]::Parse($Value, $null, [System.Globalization.DateTimeStyles]::RoundtripKind) }
+    if ($null -eq $Value) { return $null }
+    # If already a DateTime, normalise to UTC and return directly
+    if ($Value -is [datetime]) {
+        if ($Value.Kind -eq [System.DateTimeKind]::Local) { return $Value.ToUniversalTime() }
+        return $Value
+    }
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    try {
+        # Use InvariantCulture to avoid locale-dependent parsing (e.g. dd/MM vs MM/dd)
+        return [datetime]::Parse(
+            $Value.ToString(),
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor
+            [System.Globalization.DateTimeStyles]::AssumeUniversal
+        )
+    }
     catch { return $null }
 }
 
