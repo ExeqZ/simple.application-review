@@ -297,7 +297,9 @@ function Get-BulkScimStatus {
         [string]$AccessToken,
 
         [Parameter(Mandatory)]
-        [object[]]$ServicePrincipals
+        [object[]]$ServicePrincipals,
+
+        [scriptblock]$TokenRefreshScript = $null
     )
 
     $result = @{}
@@ -309,6 +311,11 @@ function Get-BulkScimStatus {
         Write-Progress -Activity 'Checking SCIM provisioning' `
             -Status "$idx / $total — $($sp.displayName)" `
             -PercentComplete (($idx / $total) * 100)
+
+        if ($TokenRefreshScript -and (Test-TokenExpiringSoon -AccessToken $AccessToken)) {
+            Write-Verbose "Token expiring soon — refreshing before SCIM check for $($sp.displayName)..."
+            $AccessToken = & $TokenRefreshScript
+        }
 
         $result[$sp.id] = Test-ScimProvisioning -AccessToken $AccessToken -ServicePrincipalId $sp.id
     }

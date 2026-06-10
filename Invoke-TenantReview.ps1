@@ -446,8 +446,18 @@ $servicePrincipals = Get-AllApplications @appParams
 Write-Host "  Found $($servicePrincipals.Count) service principals to review." -ForegroundColor Green
 if ($DebugLog) { Write-Verbose "[DEBUG] Service principal count: $($servicePrincipals.Count), Filters: IncludeFirstParty=$IncludeFirstPartyMicrosoftApps IncludeDisabled=$IncludeDisabledApps ExcludeMI=$ExcludeManagedIdentities" }
 
+# ── Credential & owner analysis (done early, before per-SP loops exhaust the token) ──
+Write-Host "`n[3/7] Checking credentials & owners..." -ForegroundColor Yellow
+
+$appRegDetails  = Get-ApplicationRegistrationDetails -AccessToken $accessToken
+$credentialMap  = $appRegDetails.Credentials
+$ownerMap       = $appRegDetails.Owners
+$expiredCount   = @($credentialMap.Values | Where-Object { $_.HasAnyExpired }).Count
+Write-Host "  Found $($credentialMap.Count) app registrations, $expiredCount with expired credentials." -ForegroundColor Green
+if ($DebugLog) { Write-Verbose "[DEBUG] Credential analysis complete. $($credentialMap.Count) apps, $expiredCount expired" }
+
 # ── Analyse permissions ───────────────────────────────────────────────────────
-Write-Host "`n[3/7] Analysing permissions..." -ForegroundColor Yellow
+Write-Host "`n[4/7] Analysing permissions..." -ForegroundColor Yellow
 
 $permissionResults = [System.Collections.Generic.List[object]]::new()
 $total             = $servicePrincipals.Count
@@ -458,6 +468,11 @@ foreach ($sp in $servicePrincipals) {
     Write-Progress -Activity 'Analysing permissions' `
         -Status "$i / $total — $($sp.displayName)" `
         -PercentComplete (($i / $total) * 100)
+
+    if (Test-TokenExpiringSoon -AccessToken $accessToken) {
+        Write-Verbose "Token expiring soon — refreshing before permissions query for $($sp.displayName)..."
+        $accessToken = & $tokenRefreshScript
+    }
 
     $permData    = Get-ApplicationPermissions -AccessToken $accessToken -ServicePrincipalId $sp.id -AppId $sp.appId
     $permSummary = Get-PermissionSummary -PermissionData $permData
@@ -473,7 +488,7 @@ Write-Host "  Permissions analysed." -ForegroundColor Green
 if ($DebugLog) { Write-Verbose "[DEBUG] Permissions analysed for $($permissionResults.Count) apps" }
 
 # ── Sign-in activity ──────────────────────────────────────────────────────────
-Write-Host "`n[4/7] Retrieving sign-in activity..." -ForegroundColor Yellow
+Write-Host "`n[5/7] Retrieving sign-in activity..." -ForegroundColor Yellow
 
 $signInParams = @{
     AccessToken             = $accessToken
@@ -558,22 +573,15 @@ Write-Host "  Sign-in activity retrieved." -ForegroundColor Green
 if ($DebugLog) { Write-Verbose "[DEBUG] Sign-in results: $($signInResults.Count) records. Mode: $(if ($LogAnalyticsWorkspaceId) { 'LogAnalytics' } else { 'GraphAuditLog' })" }
 
 # ── SCIM / Provisioning detection ─────────────────────────────────────────────
-Write-Host "`n[5/7] Detecting SCIM provisioning..." -ForegroundColor Yellow
+Write-Host "`n[6/7] Detecting SCIM provisioning..." -ForegroundColor Yellow
 
-$scimStatus = Get-BulkScimStatus -AccessToken $accessToken -ServicePrincipals $servicePrincipals
+if (Test-TokenExpiringSoon -AccessToken $accessToken) {
+    $accessToken = & $tokenRefreshScript
+}
+$scimStatus = Get-BulkScimStatus -AccessToken $accessToken -ServicePrincipals $servicePrincipals -TokenRefreshScript $tokenRefreshScript
 $scimCount  = @($scimStatus.Values | Where-Object { $_ }).Count
 Write-Host "  Found $scimCount app(s) with SCIM provisioning configured." -ForegroundColor Green
 if ($DebugLog) { Write-Verbose "[DEBUG] SCIM detection complete. $scimCount of $($servicePrincipals.Count) apps have SCIM configured" }
-
-# ── Credential & owner analysis ─────────────────────────────────────────────
-Write-Host "`n[6/7] Checking credentials & owners..." -ForegroundColor Yellow
-
-$appRegDetails  = Get-ApplicationRegistrationDetails -AccessToken $accessToken
-$credentialMap  = $appRegDetails.Credentials
-$ownerMap       = $appRegDetails.Owners
-$expiredCount   = @($credentialMap.Values | Where-Object { $_.HasAnyExpired }).Count
-Write-Host "  Found $($credentialMap.Count) app registrations, $expiredCount with expired credentials." -ForegroundColor Green
-if ($DebugLog) { Write-Verbose "[DEBUG] Credential analysis complete. $($credentialMap.Count) apps, $expiredCount expired" }
 
 # ── Combine & report ──────────────────────────────────────────────────────────
 Write-Host "`n[7/7] Generating reports..." -ForegroundColor Yellow

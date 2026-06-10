@@ -347,6 +347,20 @@ foreach ($tenant in $tenants) {
         $servicePrincipals = Get-AllApplications @spParams
         Write-Host "  Found $($servicePrincipals.Count) principals."
 
+        # ── Credential & owner analysis (done early, before per-SP loops exhaust the token) ──
+        $appRegDetails = Get-ApplicationRegistrationDetails -AccessToken $accessToken
+        $credentialMap = $appRegDetails.Credentials
+        $ownerMap      = $appRegDetails.Owners
+        $expiredCount  = @($credentialMap.Values | Where-Object { $_.HasAnyExpired }).Count
+        Write-Host "  Credentials: $($credentialMap.Count) app registrations, $expiredCount with expired credentials."
+
+        # Build token refresh scriptblock scoped to this tenant's config
+        # (defined before the permissions loop so all subsequent stages can use it)
+        $currentTenant = $tenant
+        $tenantTokenRefreshScript = {
+            return Get-GraphAccessTokenFromConfig -TenantConfig $currentTenant
+        }.GetNewClosure()
+
         # ── Permissions ───────────────────────────────────────────────────────
         $permResults = [System.Collections.Generic.List[object]]::new()
         $total       = $servicePrincipals.Count
@@ -357,6 +371,11 @@ foreach ($tenant in $tenants) {
                 -Status "$i/$total — $($sp.displayName)" `
                 -PercentComplete (($i / $total) * 100)
 
+            if (Test-TokenExpiringSoon -AccessToken $accessToken) {
+                Write-Verbose "Token expiring soon — refreshing before permissions query for $($sp.displayName)..."
+                $accessToken = & $tenantTokenRefreshScript
+            }
+
             $pd  = Get-ApplicationPermissions -AccessToken $accessToken -ServicePrincipalId $sp.id
             $ps  = Get-PermissionSummary -PermissionData $pd
             $permResults.Add([PSCustomObject]@{ ServicePrincipal = $sp; PermissionData = $pd; PermissionSummary = $ps })
@@ -364,11 +383,7 @@ foreach ($tenant in $tenants) {
         Write-Progress -Id 1 -Activity "[$tenantIndex] Permissions" -Completed
 
         # ── Sign-in activity ──────────────────────────────────────────────────
-        # Build a token refresh scriptblock scoped to this tenant's config
-        $currentTenant = $tenant
-        $tenantTokenRefreshScript = {
-            return Get-GraphAccessTokenFromConfig -TenantConfig $currentTenant
-        }.GetNewClosure()
+        # Token refresh scriptblock already defined above; pass it through to sign-in batching
 
         $signInParams = @{
             AccessToken             = $accessToken
@@ -424,14 +439,7 @@ foreach ($tenant in $tenants) {
         $signInResults = Get-BulkSignInActivity @signInParams
 
         # ── SCIM detection ────────────────────────────────────────────────────
-        $scimStatus = Get-BulkScimStatus -AccessToken $accessToken -ServicePrincipals $servicePrincipals
-
-        # ── Credential & owner analysis ───────────────────────────────────────
-        $appRegDetails = Get-ApplicationRegistrationDetails -AccessToken $accessToken
-        $credentialMap = $appRegDetails.Credentials
-        $ownerMap      = $appRegDetails.Owners
-        $expiredCount  = @($credentialMap.Values | Where-Object { $_.HasAnyExpired }).Count
-        Write-Host "  Credentials: $($credentialMap.Count) app registrations, $expiredCount with expired credentials."
+        $scimStatus = Get-BulkScimStatus -AccessToken $accessToken -ServicePrincipals $servicePrincipals -TokenRefreshScript $tenantTokenRefreshScript
 
         # ── Combine ───────────────────────────────────────────────────────────
         $signInLookup = @{}

@@ -238,7 +238,12 @@ function Invoke-GraphRequest {
 
         [object]$Body,
 
-        [switch]$All
+        [switch]$All,
+
+        # Optional scriptblock that returns a fresh access token when invoked.
+        # When provided, a proactive refresh is attempted before each page request
+        # if the token is expiring soon, and a reactive refresh is attempted once on HTTP 401.
+        [scriptblock]$TokenRefreshScript = $null
     )
 
     $headers = @{
@@ -252,6 +257,13 @@ function Invoke-GraphRequest {
     $maxRetries  = 5
 
     do {
+        # Proactive refresh before each page request
+        if ($TokenRefreshScript -and (Test-TokenExpiringSoon -AccessToken $AccessToken)) {
+            Write-Verbose "Access token expiring soon — refreshing before next request..."
+            $AccessToken = & $TokenRefreshScript
+            $headers['Authorization'] = "Bearer $AccessToken"
+        }
+
         $attempt = 0
         $success = $false
 
@@ -296,6 +308,13 @@ function Invoke-GraphRequest {
                     $waitSeconds = [math]::Min($retryAfter * $attempt, 300)
                     Write-Warning "Graph API throttled (HTTP $statusCode). Waiting ${waitSeconds}s before retry $attempt/$maxRetries..."
                     Start-Sleep -Seconds $waitSeconds
+                }
+                elseif ($statusCode -eq 401 -and $TokenRefreshScript -and $attempt -eq 0) {
+                    # Reactive refresh — token expired mid-request; retry once with a new token
+                    $attempt++
+                    Write-Warning "HTTP 401 received — refreshing access token and retrying..."
+                    $AccessToken = & $TokenRefreshScript
+                    $headers['Authorization'] = "Bearer $AccessToken"
                 }
                 elseif ($statusCode -eq 401) {
                     throw "HTTP 401 Unauthorized — access token may be expired or the app lacks required permissions. URI: $currentUri"
