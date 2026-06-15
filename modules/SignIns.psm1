@@ -210,7 +210,8 @@ function Get-ServicePrincipalSignIns {
     )
 
     $select = 'createdDateTime,servicePrincipalName,servicePrincipalId,status,ipAddress,resourceDisplayName,resourceId'
-    $filter = "servicePrincipalId eq '$ServicePrincipalId' and createdDateTime ge $Since and signInEventTypes/any(t: t eq 'servicePrincipal')"
+    # Include both 'servicePrincipal' (client-credential app-to-app) and 'managedIdentity' event types
+    $filter = "servicePrincipalId eq '$ServicePrincipalId' and createdDateTime ge $Since and signInEventTypes/any(t: t eq 'servicePrincipal' or t eq 'managedIdentity')"
     $uri    = "https://graph.microsoft.com/beta/auditLogs/signIns?`$filter=$([Uri]::EscapeDataString($filter))&`$select=$select&`$top=999&`$count=true"
 
     return Invoke-GraphRequestSafe -AccessToken $AccessToken -Uri $uri -Context "SP sign-ins for $ServicePrincipalId"
@@ -551,7 +552,8 @@ function Invoke-BatchedSignInQuery {
             $batchVersion = 'beta'
             $buildUrl = {
                 param($appId)
-                $f = [Uri]::EscapeDataString("appId eq ${q}${appId}${q} and createdDateTime ge $Since and signInEventTypes/any(t: t eq ${q}servicePrincipal${q})")
+                # Include both 'servicePrincipal' (client-credential app-to-app) and 'managedIdentity' event types
+                $f = [Uri]::EscapeDataString("appId eq ${q}${appId}${q} and createdDateTime ge $Since and signInEventTypes/any(t: t eq ${q}servicePrincipal${q} or t eq ${q}managedIdentity${q})")
                 return "/auditLogs/signIns?`$filter=$f&`$select=$selectFields&`$top=999&`$count=true"
             }
         }
